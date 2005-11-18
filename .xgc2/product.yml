@@ -1,7 +1,7 @@
 schema: xgc2.product.v1
 id: libxgc2-state-machine-dev
 name: XGC2 State Machine
-version: 0.1.3-6
+version: 0.1.3-7
 kind: toolchain-apt
 summary: System-level deterministic C++ state machine development library for XGC2
   controllers, planners, and runtime workflows.
@@ -34,10 +34,10 @@ usage:
     '
 release:
   apt_versions:
-    bionic: 0.1.3-6~bionic
-    focal: 0.1.3-6~focal
-    jammy: 0.1.3-6~jammy
-    noble: 0.1.3-6~noble
+    bionic: 0.1.3-7~bionic
+    focal: 0.1.3-7~focal
+    jammy: 0.1.3-7~jammy
+    noble: 0.1.3-7~noble
 ownership:
   paths:
   - /usr/include/state_machine
