@@ -28,7 +28,7 @@ jobs:
 
       - name: Build and install-check deb package in Docker
         run: |
-          scripts/build_debs_in_docker.sh \
+          .xgc2/scripts/build_debs_in_docker.sh \
             --work-dir "$RUNNER_TEMP/state-machine-${{ matrix.arch }}" \
             --output-dir "$GITHUB_WORKSPACE/debs"
 
@@ -40,4 +40,4 @@ jobs:
 
       - name: Publish to self-hosted APT repository
         if: ${{ env.APT_REPO_HOST != '' && env.APT_REPO_PORT != '' && env.APT_REPO_SSH_KEY != '' && env.APT_REPO_KNOWN_HOSTS != '' }}
-        run: scripts/publish_apt_repo.sh --deb-dir debs
+        run: .xgc2/scripts/publish_apt_repo.sh --deb-dir debs
