@@ -72,6 +72,8 @@ find "${pkg_root}" -type d -exec chmod 0755 {} +
 find "${pkg_root}" -type f -exec chmod 0644 {} +
 chmod 0755 "${pkg_root}/DEBIAN" "${pkg_root}/DEBIAN/postinst" "${pkg_root}/DEBIAN/postrm"
 find "${pkg_root}/usr/lib/${multiarch}" -maxdepth 1 -type f -name 'libxgc2_state_machine.so*' -exec chmod 0755 {} +
+find "${pkg_root}/usr/lib/${multiarch}" -maxdepth 1 -type f -name 'libxgc2_state_machine.so*' \
+  -exec strip --strip-unneeded {} + 2>/dev/null || true
 
 fakeroot dpkg-deb --build "${pkg_root}" "${output_dir}/${package_name}_${version}_${arch}.deb" >/dev/null
 dpkg-deb -I "${output_dir}/${package_name}_${version}_${arch}.deb"
