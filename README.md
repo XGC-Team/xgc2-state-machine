@@ -1,6 +1,6 @@
-# state_machine
+# XGC2 State Machine
 
-`state_machine` is a small deterministic, event-driven C++17 state machine runtime packaged as a ROS1/catkin library. It is used by controllers, planners, and workflow code that need explicit lifecycle transitions without depending on an external FSM framework.
+`libxgc2-state-machine-dev` provides a small deterministic, event-driven C++17 state machine runtime. It is intentionally packaged as a system development library so ROS1 packages, non-ROS CMake projects, MATLAB bindings, and Python extensions can all consume the same installed headers and shared library.
 
 The runtime is intentionally simple:
 
@@ -12,25 +12,41 @@ The runtime is intentionally simple:
 
 For deeper runtime semantics, see [`docs/runtime_design.md`](docs/runtime_design.md).
 
-## Package Layout
-
-```text
-state_machine/
-  include/state_machine/state_machine.hpp   Public API
-  src/state_machine.cpp                     Runtime implementation
-  test/state_machine_runtime_test.cpp       Unit, stress, and sanitizer-oriented tests
-  docs/runtime_design.md                    Design and reliability notes
-```
-
-## Build
-
-From `source/ros1_ws`:
+## Install
 
 ```bash
-catkin_make --pkg state_machine
+sudo apt update
+sudo apt install libxgc2-state-machine-dev
 ```
 
-Downstream packages should add `state_machine` to `find_package(catkin REQUIRED COMPONENTS ...)`, `catkin_package(CATKIN_DEPENDS ...)`, and `package.xml` dependencies, then link their targets against `${catkin_LIBRARIES}`.
+The package installs:
+
+```text
+/usr/include/state_machine/state_machine.hpp
+/usr/lib/<multiarch>/libxgc2_state_machine.so
+/usr/lib/<multiarch>/cmake/xgc2_state_machine/
+```
+
+## CMake Usage
+
+```cmake
+find_package(xgc2_state_machine REQUIRED CONFIG)
+
+target_link_libraries(your_target
+  PRIVATE
+    xgc2_state_machine::state_machine
+)
+```
+
+## Source Layout
+
+```text
+include/state_machine/state_machine.hpp   Public API
+src/state_machine.cpp                     Runtime implementation
+test/state_machine_runtime_test.cpp       Unit, stress, and sanitizer-oriented tests
+docs/runtime_design.md                    Design and reliability notes
+.xgc2/scripts/build_deb.sh                Debian package builder
+```
 
 ## Minimal Usage
 
@@ -61,7 +77,6 @@ class ActiveState final : public sm::State {
 public:
     std::string name() const override { return "Active"; }
     sm::ActionResult onTick(sm::StateContext& ctx) override {
-        // Callback-generated events are processed by a later update() snapshot.
         return sm::Status{};
     }
 };
@@ -143,65 +158,26 @@ Common machine calls:
 - `stop()`
 - `snapshot()`, `eventLog()`, `faultLog()`, `currentEvents()`
 
-Important runtime options:
-
-- `RuntimeOptions::max_pending_events`: bounds queued external events. `0` disables the bound.
-- `RuntimeOptions::event_log_capacity`: bounds retained event log records.
-- `RuntimeOptions::fault_log_capacity`: bounds retained fault records.
-- `RuntimeOptions::max_fault_depth`: prevents recursive fault handling loops.
-- `UpdateOptions::max_events_per_update`: bounds one update snapshot.
-- `UpdateOptions::max_transitions_per_update`: bounds transition work in one update.
-- `UpdateOptions::run_tick`: controls whether active states receive `onTick()`.
-
 ## Threading Rules
 
 `postEvent()` is thread-safe and may be called from ROS callbacks or worker threads.
 
 `update()` is owner-thread only. The owner is bound by `bindOwnerThread()` or by the first successful `start()`. Calling `update()` from another thread returns `kWrongOwnerThread`. Recursive `update()` returns `kUpdateAlreadyInProgress`, records a fault, and schedules a fault event.
 
-State callbacks should not directly mutate the graph or call `update()`. They should return `Status` and use `StateContext::postEvent()` when they need to drive follow-up behavior.
+State callbacks should not directly mutate the graph or call `update()`. They should return `Status` and use `StateContext::postEvent()` when they need follow-up behavior.
 
-## Fault Handling
-
-Callback exceptions and failed callback statuses are converted into fault records and fault events. Runtime-generated fault events bypass normal pending-event capacity so that normal queue backpressure cannot hide internal runtime faults.
-
-The library records faults but does not define a domain-specific fail-safe action. Production users must explicitly define fault transitions and fail-safe states in their own graph.
-
-## Current Users
-
-Current in-tree users include:
-
-- `src/controller/multirotor_controller`: UAV and UGV controller lifecycle/state logic.
-- `src/planner/formation_generator`: DMPC scheduler lifecycle management.
-- `src/manager/workflow`: workflow runner lifecycle transitions.
-
-These packages configure their domain states locally and use this package only as the shared deterministic runtime.
-
-## Tests
-
-Run the catkin tests from `source/ros1_ws`:
+## Build And Test
 
 ```bash
-catkin_make run_tests_state_machine
-catkin_test_results build/test_results/state_machine
+cmake -S . -B .ci/build -DCMAKE_BUILD_TYPE=Release
+cmake --build .ci/build -- -j"$(nproc)"
+(cd .ci/build && ctest --output-on-failure)
 ```
 
-Run the package build only:
+Build the Debian package:
 
 ```bash
-catkin_make --pkg state_machine
+.xgc2/scripts/build_deb.sh
 ```
 
-The test suite covers event ordering, bounded update snapshots, pending-event capacity, concurrent `postEvent()`, owner-thread enforcement, transition variants, parallel regions, task result filtering, cancellation policies, fault fuse behavior, stop semantics, and log/snapshot copying.
-
-The repository CI also runs direct ASAN/UBSAN and TSAN builds for the same runtime tests.
-
-## Production Notes
-
-Before using this runtime in safety-critical behavior, each integration should:
-
-- check every `Status` and `Result<T>`;
-- define explicit fault transitions and fail-safe states;
-- set a finite `max_pending_events` suited to the node's callback rate;
-- keep long-running work outside state callbacks and report completion through events or task results;
-- run the catkin tests and sanitizer tests in CI.
+The CI builds and smoke-tests `libxgc2-state-machine-dev` for Ubuntu 20.04, 22.04, and 24.04 on both `amd64` and `arm64`.

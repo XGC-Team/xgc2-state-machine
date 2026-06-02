@@ -1,30 +1,33 @@
 schema: xgc2.product.v1
-id: xgc2-state-machine
+id: libxgc2-state-machine-dev
 name: XGC2 State Machine
-kind: ros1-apt
-summary: Deterministic event-driven state machine runtime for ROS1 controllers, planners, and workflow managers.
-
-ros:
-  distro: noetic
-  packages:
-    - state_machine
+kind: toolchain-apt
+summary: System-level deterministic C++ state machine development library for XGC2 controllers, planners, and runtime workflows.
 
 apt:
-  distribution: focal
+  distribution: focal,jammy,noble
   install:
-    - ros-noetic-xgc2-state-machine
+    - libxgc2-state-machine-dev
   packages:
-    - ros-noetic-xgc2-state-machine
+    - libxgc2-state-machine-dev
 
 usage:
   install: |
     sudo apt update
-    sudo apt install ros-noetic-xgc2-state-machine
+    sudo apt install libxgc2-state-machine-dev
   smoke_test: |
-    rospack find state_machine
+    cmake --find-package -DNAME=xgc2_state_machine -DCOMPILER_ID=GNU -DLANGUAGE=CXX -DMODE=EXIST
+  notes: |
+    CMake consumers should use find_package(xgc2_state_machine REQUIRED CONFIG)
+    and link xgc2_state_machine::state_machine. The public include path remains
+    <state_machine/state_machine.hpp>.
 
 ownership:
   paths:
-    - /opt/ros/noetic/share/state_machine
-    - /opt/ros/noetic/include/state_machine
-    - /opt/ros/noetic/lib/libstate_machine.so
+    - /usr/include/state_machine
+    - /usr/lib/*/libxgc2_state_machine.so*
+    - /usr/lib/*/cmake/xgc2_state_machine
+
+conflicts:
+  apt_packages:
+    - ros-noetic-xgc2-state-machine

@@ -1,0 +1,117 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  package-compliance:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check whitespace
+        run: git -C "${GITHUB_WORKSPACE}" diff --check HEAD
+
+      - name: Package compliance
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}"
+          ./.xgc2/scripts/check_package_compliance.sh
+
+  deb-build-and-smoke:
+    needs: package-compliance
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+            image: ubuntu:20.04
+            distribution: focal
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            image: ubuntu:20.04
+            distribution: focal
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+            image: ubuntu:22.04
+            distribution: jammy
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            image: ubuntu:22.04
+            distribution: jammy
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+            image: ubuntu:24.04
+            distribution: noble
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            image: ubuntu:24.04
+            distribution: noble
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build deb and run installed smoke test
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --platform "${{ matrix.platform }}" \
+            -v "${GITHUB_WORKSPACE}:/work" \
+            -w /work \
+            "${{ matrix.image }}" \
+            bash -lc '
+              set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                build-essential \
+                ca-certificates \
+                cmake \
+                dpkg-dev \
+                fakeroot \
+                file \
+                git \
+                libgtest-dev
+              ./.xgc2/scripts/check_package_compliance.sh
+              ./.xgc2/scripts/build_deb.sh
+              apt-get install -y ./.ci/debs/libxgc2-state-machine-dev_*.deb
+              ./.xgc2/scripts/smoke_test_installed.sh
+            '
+
+      - name: Upload deb artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: libxgc2-state-machine-dev-${{ matrix.distribution }}-${{ matrix.arch }}
+          path: .ci/debs/*.deb
+
+      - name: Publish to self-hosted APT repository
+        if: github.event_name != 'pull_request'
+        env:
+          APT_REPO_HOST: ${{ secrets.APT_REPO_HOST }}
+          APT_REPO_PORT: ${{ secrets.APT_REPO_PORT }}
+          APT_REPO_USER: ${{ secrets.APT_REPO_USER }}
+          APT_REPO_SSH_KEY: ${{ secrets.APT_REPO_SSH_KEY }}
+          APT_REPO_KNOWN_HOSTS: ${{ secrets.APT_REPO_KNOWN_HOSTS }}
+          APT_REPO_DISTRIBUTION: ${{ matrix.distribution }}
+        run: ./.xgc2/scripts/publish_self_hosted_apt.sh --deb-dir .ci/debs

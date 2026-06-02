@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
+
 set -euo pipefail
 
-DEB_DIR="${DEB_DIR:-${PWD}/debs}"
+DEB_DIR="${DEB_DIR:-${PWD}/.ci/debs}"
 APT_REPO_HOST="${APT_REPO_HOST:-}"
 APT_REPO_PORT="${APT_REPO_PORT:-22}"
 APT_REPO_USER="${APT_REPO_USER:-aptdeploy}"
@@ -23,8 +24,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "${APT_REPO_HOST}" || -z "${APT_REPO_SSH_KEY}" || -z "${APT_REPO_KNOWN_HOSTS}" ]]; then
-  echo "APT_REPO_HOST, APT_REPO_SSH_KEY and APT_REPO_KNOWN_HOSTS are required" >&2
-  exit 1
+  echo "APT publish skipped: APT_REPO_HOST, APT_REPO_SSH_KEY, and APT_REPO_KNOWN_HOSTS are required"
+  exit 0
 fi
 
 if ! compgen -G "${DEB_DIR}/*.deb" >/dev/null; then

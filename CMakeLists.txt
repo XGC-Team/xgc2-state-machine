@@ -1,84 +1,93 @@
-cmake_minimum_required(VERSION 3.0.2)
-project(state_machine)
+cmake_minimum_required(VERSION 3.16)
+project(xgc2_state_machine VERSION 0.1.0 LANGUAGES CXX)
 
-find_package(catkin REQUIRED)
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
 
-catkin_package(
-  INCLUDE_DIRS include
-  LIBRARIES ${PROJECT_NAME}
-)
+option(XGC2_STATE_MACHINE_BUILD_TESTING "Build xgc2_state_machine tests" ON)
 
-include_directories(
-  include
-  ${catkin_INCLUDE_DIRS}
-)
-
-add_library(${PROJECT_NAME} SHARED
+add_library(xgc2_state_machine SHARED
   src/state_machine.cpp
 )
+add_library(xgc2_state_machine::state_machine ALIAS xgc2_state_machine)
 
-target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)
-
-target_include_directories(${PROJECT_NAME} PUBLIC
-  include
+set_target_properties(xgc2_state_machine PROPERTIES
+  OUTPUT_NAME xgc2_state_machine
+  EXPORT_NAME state_machine
+  VERSION ${PROJECT_VERSION}
+  SOVERSION 0
 )
 
-target_link_libraries(${PROJECT_NAME}
-  ${catkin_LIBRARIES}
+target_compile_features(xgc2_state_machine PUBLIC cxx_std_17)
+target_include_directories(xgc2_state_machine
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
-install(TARGETS ${PROJECT_NAME}
-  ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+install(TARGETS xgc2_state_machine
+  EXPORT xgc2_state_machineTargets
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-install(DIRECTORY include/${PROJECT_NAME}/
-  DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
+install(DIRECTORY include/
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
 install(DIRECTORY docs/
-  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/docs
+  DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/libxgc2-state-machine-dev/docs
 )
 
-if(CATKIN_ENABLE_TESTING)
-  catkin_add_gtest(${PROJECT_NAME}_runtime_test
-    test/state_machine_runtime_test.cpp
-  )
-  if(TARGET ${PROJECT_NAME}_runtime_test)
-    target_link_libraries(${PROJECT_NAME}_runtime_test
-      ${PROJECT_NAME}
-      ${catkin_LIBRARIES}
-    )
-    target_include_directories(${PROJECT_NAME}_runtime_test PRIVATE
-      include
-    )
-  endif()
+configure_package_config_file(
+  cmake/xgc2_state_machineConfig.cmake.in
+  ${CMAKE_CURRENT_BINARY_DIR}/xgc2_state_machineConfig.cmake
+  INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/xgc2_state_machine
+  PATH_VARS CMAKE_INSTALL_INCLUDEDIR
+)
 
-  find_program(LCOV_EXECUTABLE lcov)
-  if(LCOV_EXECUTABLE)
-    set(COVERAGE_DIR ${CMAKE_BINARY_DIR}/${PROJECT_NAME}_coverage)
-    add_custom_target(${PROJECT_NAME}_coverage
-      COMMAND ${CMAKE_COMMAND} -E rm -rf ${COVERAGE_DIR}
-      COMMAND ${CMAKE_COMMAND} -E make_directory ${COVERAGE_DIR}
-      COMMAND ${CMAKE_COMMAND} -E chdir ${COVERAGE_DIR}
-        ${CMAKE_CXX_COMPILER}
-        -std=c++17 --coverage -O0 -g -pthread
-        -I${CMAKE_CURRENT_SOURCE_DIR}/include
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/state_machine.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/test/state_machine_runtime_test.cpp
-        -lgtest
-        -o ${PROJECT_NAME}_runtime_test_coverage
-      COMMAND ${CMAKE_COMMAND} -E chdir ${COVERAGE_DIR}
-        ./${PROJECT_NAME}_runtime_test_coverage
-      COMMAND ${LCOV_EXECUTABLE}
-        --capture
-        --directory ${COVERAGE_DIR}
-        --output-file ${COVERAGE_DIR}/coverage.info
-        --include "*/src/common/state_machine/src/state_machine.cpp"
-      COMMAND ${LCOV_EXECUTABLE}
-        --summary ${COVERAGE_DIR}/coverage.info
-      COMMENT "Generating state_machine runtime coverage"
+write_basic_package_version_file(
+  ${CMAKE_CURRENT_BINARY_DIR}/xgc2_state_machineConfigVersion.cmake
+  VERSION ${PROJECT_VERSION}
+  COMPATIBILITY SameMajorVersion
+)
+
+install(FILES
+  ${CMAKE_CURRENT_BINARY_DIR}/xgc2_state_machineConfig.cmake
+  ${CMAKE_CURRENT_BINARY_DIR}/xgc2_state_machineConfigVersion.cmake
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/xgc2_state_machine
+)
+
+install(EXPORT xgc2_state_machineTargets
+  NAMESPACE xgc2_state_machine::
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/xgc2_state_machine
+)
+
+if(XGC2_STATE_MACHINE_BUILD_TESTING)
+  include(CTest)
+  if(BUILD_TESTING)
+    find_package(GTest REQUIRED)
+    if(TARGET GTest::gtest)
+      set(_xgc2_state_machine_gtest GTest::gtest)
+    else()
+      set(_xgc2_state_machine_gtest GTest::GTest)
+    endif()
+    if(TARGET GTest::gtest_main)
+      set(_xgc2_state_machine_gtest_main GTest::gtest_main)
+    else()
+      set(_xgc2_state_machine_gtest_main GTest::Main)
+    endif()
+    add_executable(state_machine_runtime_test
+      test/state_machine_runtime_test.cpp
     )
+    target_link_libraries(state_machine_runtime_test
+      PRIVATE
+        xgc2_state_machine::state_machine
+        ${_xgc2_state_machine_gtest}
+        ${_xgc2_state_machine_gtest_main}
+        pthread
+    )
+    add_test(NAME state_machine_runtime_test COMMAND state_machine_runtime_test)
   endif()
 endif()

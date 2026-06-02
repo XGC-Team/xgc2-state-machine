@@ -1,0 +1,16 @@
+@PACKAGE_INIT@
+
+include("${CMAKE_CURRENT_LIST_DIR}/xgc2_state_machineTargets.cmake")
+
+set(XGC2_STATE_MACHINE_INCLUDE_DIRS "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
+set(XGC2_STATE_MACHINE_LIBRARIES xgc2_state_machine::state_machine)
+
+if(NOT TARGET xgc2_state_machine::state_machine)
+  message(FATAL_ERROR "xgc2_state_machine target was not imported")
+endif()
+
+macro(xgc2_state_machine_require)
+  if(NOT EXISTS "${XGC2_STATE_MACHINE_INCLUDE_DIRS}/state_machine/state_machine.hpp")
+    message(FATAL_ERROR "xgc2_state_machine header is missing: ${XGC2_STATE_MACHINE_INCLUDE_DIRS}/state_machine/state_machine.hpp")
+  endif()
+endmacro()
