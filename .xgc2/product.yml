@@ -1,0 +1,30 @@
+schema: xgc2.product.v1
+id: xgc2-state-machine
+name: XGC2 State Machine
+kind: ros1-apt
+summary: Deterministic event-driven state machine runtime for ROS1 controllers, planners, and workflow managers.
+
+ros:
+  distro: noetic
+  packages:
+    - state_machine
+
+apt:
+  distribution: focal
+  install:
+    - ros-noetic-xgc2-state-machine
+  packages:
+    - ros-noetic-xgc2-state-machine
+
+usage:
+  install: |
+    sudo apt update
+    sudo apt install ros-noetic-xgc2-state-machine
+  smoke_test: |
+    rospack find state_machine
+
+ownership:
+  paths:
+    - /opt/ros/noetic/share/state_machine
+    - /opt/ros/noetic/include/state_machine
+    - /opt/ros/noetic/lib/libstate_machine.so

@@ -1,0 +1,7 @@
+.work/
+build/
+devel/
+install/
+install-root/
+debs/
+*.deb
