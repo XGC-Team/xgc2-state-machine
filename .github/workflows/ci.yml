@@ -93,6 +93,7 @@ jobs:
                 file \
                 git \
                 libgtest-dev
+              git config --global --add safe.directory /work
               ./.xgc2/scripts/check_package_compliance.sh
               ./.xgc2/scripts/build_deb.sh
               apt-get install -y ./.ci/debs/libxgc2-state-machine-dev_*.deb

@@ -36,6 +36,8 @@ cat > "${probe_dir}/link_probe.cpp" <<'CPP'
 
 class ReadyState final : public state_machine::State {
 public:
+  std::string name() const override { return "Ready"; }
+
   state_machine::ActionResult onEnter(state_machine::StateContext&) override
   {
     entered = true;
