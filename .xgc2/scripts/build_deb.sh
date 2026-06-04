@@ -6,13 +6,41 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
 
 package_name="libxgc2-state-machine-dev"
-version="${PACKAGE_VERSION:-0.1.0-1}"
+package_base_version="${PACKAGE_BASE_VERSION:-0.1.0-2}"
+package_distribution="${PACKAGE_DISTRIBUTION:-${APT_REPO_DISTRIBUTION:-}}"
 build_dir="${XGC2_STATE_MACHINE_BUILD_DIR:-${repo_root}/.ci/build}"
 stage_dir="${XGC2_STATE_MACHINE_STAGE_DIR:-${repo_root}/.ci/stage}"
 output_dir="${XGC2_STATE_MACHINE_DEB_OUTPUT_DIR:-${repo_root}/.ci/debs}"
 pkg_root="${repo_root}/.ci/pkg/${package_name}"
 arch="$(dpkg --print-architecture)"
 multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
+
+if [[ -z "${package_distribution}" && -r /etc/os-release ]]; then
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  package_distribution="${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}"
+fi
+
+if [[ -n "${PACKAGE_VERSION:-}" ]]; then
+  version="${PACKAGE_VERSION}"
+else
+  if [[ -z "${package_distribution}" ]]; then
+    echo "PACKAGE_DISTRIBUTION or VERSION_CODENAME is required for binary Debian package versioning" >&2
+    exit 1
+  fi
+  version="${package_base_version}~${package_distribution}"
+fi
+
+if [[ -n "${package_distribution}" && "${ALLOW_UNSCOPED_BINARY_DEB_VERSION:-0}" != "1" ]]; then
+  case "${version}" in
+    *"~${package_distribution}"*|*"+"${package_distribution}*) ;;
+    *)
+      echo "binary Debian package version '${version}' must include distribution suffix '${package_distribution}'" >&2
+      echo "set ALLOW_UNSCOPED_BINARY_DEB_VERSION=1 only for a deliberately distro-neutral artifact" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 rm -rf "${build_dir}" "${stage_dir}" "${output_dir}" "${pkg_root}"
 mkdir -p "${output_dir}"
