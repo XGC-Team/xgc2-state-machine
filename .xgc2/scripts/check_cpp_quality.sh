@@ -30,7 +30,7 @@ cmake -S "${repo_root}" -B "${build_dir}" \
 cmake --build "${build_dir}" -- -j"$(nproc)"
 (cd "${build_dir}" && ctest --output-on-failure)
 
-clang-tidy -p "${build_dir}" "${sources[@]}"
+clang-tidy --quiet -p "${build_dir}" "${sources[@]}" 2>&1 | sed -E '/^[0-9]+ warnings generated\.$/d'
 
 cppcheck \
   --enable=warning,performance,portability,style \
