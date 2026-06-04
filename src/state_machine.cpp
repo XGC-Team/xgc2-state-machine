@@ -436,7 +436,7 @@ Status StateMachine::start() {
     }
     impl_->lifecycle = MachineLifecycle::kRunning;
     for (RegionId region_id : impl_->region_order) {
-        auto& region = impl_->regions[region_id];
+        const auto& region = impl_->regions[region_id];
         const auto path = impl_->pathToRoot(region.active_leaf);
         for (StateId state : path) {
             impl_->states[state].active = true;
@@ -522,7 +522,7 @@ Status StateMachine::postTaskResult(TaskHandle handle, TaskStatus status, EventP
     return postEvent(std::move(event));
 }
 
-Status StateMachine::cancelTask(TaskHandle handle) {
+Status StateMachine::cancelTask(const TaskHandle& handle) {
     std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
     auto it = impl_->tasks.find(handle.id);
     if (it == impl_->tasks.end()) {
@@ -1026,7 +1026,7 @@ Result<TaskHandle> StateContext::startTask(TaskCancelPolicy policy, CorrelationI
     return Result<TaskHandle>::ok(handle);
 }
 
-Status StateContext::cancelTask(TaskHandle handle) {
+Status StateContext::cancelTask(const TaskHandle& handle) {
     return machine_.cancelTask(handle);
 }
 StateId StateContext::currentState(RegionId region) const {

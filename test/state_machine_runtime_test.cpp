@@ -134,6 +134,10 @@ class RecordingState final : public sm::State {
     std::vector<std::string>& log_;
 };
 
+bool containsEntry(const std::vector<std::string>& log, const char* entry) {
+    return std::find(log.begin(), log.end(), entry) != log.end();
+}
+
 void addState(sm::StateMachine& machine, sm::StateId id, sm::RegionId region, std::optional<sm::StateId> parent,
               std::unique_ptr<sm::State> state) {
     assert(machine.addState(sm::StateConfig{id, parent, region}, std::move(state)).ok());
@@ -328,7 +332,7 @@ void testParallelAndGlobal() {
     machine.update({64, 64, false});
     assert(machine.currentState(1) == 99);
     assert(machine.currentState(2) == 0);
-    assert(std::find(log.begin(), log.end(), "exit:Up") != log.end());
+    assert(containsEntry(log, "exit:Up"));
 
     sm::StateMachine inactive_global("inactive_global");
     std::vector<std::string> inactive_log;

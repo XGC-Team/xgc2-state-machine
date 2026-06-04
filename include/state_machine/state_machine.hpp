@@ -226,7 +226,7 @@ class StateContext {
     Duration elapsed(StateId state) const;
     Result<TaskHandle> startTask(TaskCancelPolicy policy = TaskCancelPolicy::kCancelOnStateExit,
                                  CorrelationId correlation_id = 0);
-    Status cancelTask(TaskHandle handle);
+    Status cancelTask(const TaskHandle& handle);
     StateId currentState(RegionId region) const;
     MachineSnapshot snapshot() const;
     RegionId region() const { return selection_.region; }
@@ -295,7 +295,7 @@ class StateMachine {
     Result<UpdateResult> update(UpdateOptions options = {});
     Status postEvent(Event event);
     Status postTaskResult(TaskHandle handle, TaskStatus status, EventPayload payload = {});
-    Status cancelTask(TaskHandle handle);
+    Status cancelTask(const TaskHandle& handle);
     MachineSnapshot snapshot() const;
     std::vector<EventLogRecord> eventLog() const;
     std::vector<FaultRecord> faultLog() const;
