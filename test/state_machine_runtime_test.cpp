@@ -7,11 +7,11 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <iostream>
 #include <mutex>
-#include <atomic>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -22,18 +22,17 @@ namespace sm = state_machine;
 namespace {
 
 class ManualClock final : public sm::Clock {
-public:
+  public:
     sm::TimePoint now() const override { return now_; }
     void advance(std::chrono::milliseconds delta) { now_ += delta; }
 
-private:
+  private:
     sm::TimePoint now_{};
 };
 
 class RecordingState final : public sm::State {
-public:
-    RecordingState(std::string name, std::vector<std::string>& log)
-        : name_(std::move(name)), log_(log) {}
+  public:
+    RecordingState(std::string name, std::vector<std::string>& log) : name_(std::move(name)), log_(log) {}
 
     std::string name() const override { return name_; }
 
@@ -130,15 +129,12 @@ public:
     sm::Status tick_status;
     sm::Status event_status;
 
-private:
+  private:
     std::string name_;
     std::vector<std::string>& log_;
 };
 
-void addState(sm::StateMachine& machine,
-              sm::StateId id,
-              sm::RegionId region,
-              std::optional<sm::StateId> parent,
+void addState(sm::StateMachine& machine, sm::StateId id, sm::RegionId region, std::optional<sm::StateId> parent,
               std::unique_ptr<sm::State> state) {
     assert(machine.addState(sm::StateConfig{id, parent, region}, std::move(state)).ok());
 }
@@ -173,8 +169,12 @@ void testThreadedSequence() {
     addState(machine, 1, sm::kDefaultRegion, std::nullopt, std::make_unique<RecordingState>("A", log));
     assert(machine.setInitialState(sm::kDefaultRegion, 1).ok());
     assert(machine.start().ok());
-    std::thread t1([&] { assert(machine.postEvent(sm::Event(10)).ok()); });
-    std::thread t2([&] { assert(machine.postEvent(sm::Event(20)).ok()); });
+    std::thread t1([&] {
+        assert(machine.postEvent(sm::Event(10)).ok());
+    });
+    std::thread t2([&] {
+        assert(machine.postEvent(sm::Event(20)).ok());
+    });
     t1.join();
     t2.join();
     sm::Event old_timestamp(30, -1000.0);
@@ -409,15 +409,16 @@ void testTaskStaleFaultStopAndLimits() {
     assert(stop_task_machine.setInitialState(1, 1).ok());
     assert(stop_task_machine.start().ok());
     stop_task_machine.update({0, 64, true});
-    std::thread stop_thread([&] { assert(stop_task_machine.stop().ok()); });
+    std::thread stop_thread([&] {
+        assert(stop_task_machine.stop().ok());
+    });
     stop_thread.join();
     assert(stop_task_machine.lifecycle() == sm::MachineLifecycle::kStopping);
     stop_task_machine.update({64, 64, false});
     assert(stop_task_machine.lifecycle() == sm::MachineLifecycle::kStopped);
     auto event_log = stop_task_machine.eventLog();
     assert(std::any_of(event_log.begin(), event_log.end(), [](const sm::EventLogRecord& record) {
-        return record.kind == sm::EventLogRecord::Kind::kTaskCancelled &&
-               record.message == "cancelled on machine stop";
+        return record.kind == sm::EventLogRecord::Kind::kTaskCancelled && record.message == "cancelled on machine stop";
     }));
 
     auto bad = std::make_unique<RecordingState>("Bad", log);
@@ -469,7 +470,8 @@ void testLifecycleErrorsAndAccessors() {
     assert(machine.currentStateName(7) == "A");
     assert(machine.currentStateName(77).empty());
     assert(!machine.addRegion({9, "frozen", 0}).ok());
-    assert(!machine.addState(sm::StateConfig{3, std::nullopt, 8}, std::make_unique<RecordingState>("Frozen", log)).ok());
+    assert(
+        !machine.addState(sm::StateConfig{3, std::nullopt, 8}, std::make_unique<RecordingState>("Frozen", log)).ok());
     assert(!machine.addTransition(missing_target).ok());
     assert(!machine.setInitialState(7, 1).ok());
     assert(machine.postEvent(sm::Event(91)).ok());
@@ -515,7 +517,9 @@ void testLifecycleErrorsAndAccessors() {
 
     sm::StateMachine wrong_owner_start("wrong_owner_start");
     assert(wrong_owner_start.bindOwnerThread().ok());
-    std::thread start_thread([&] { assert(!wrong_owner_start.start().ok()); });
+    std::thread start_thread([&] {
+        assert(!wrong_owner_start.start().ok());
+    });
     start_thread.join();
 
     sm::RuntimeOptions fault_ring_options;
@@ -583,8 +587,7 @@ void testContextTasksAndRegionCancel() {
     cancel_machine.update({0, 64, true});
     const auto event_log = cancel_machine.eventLog();
     assert(std::any_of(event_log.begin(), event_log.end(), [](const sm::EventLogRecord& record) {
-        return record.kind == sm::EventLogRecord::Kind::kTaskCancelled &&
-               record.message == "cancelled on region exit";
+        return record.kind == sm::EventLogRecord::Kind::kTaskCancelled && record.message == "cancelled on region exit";
     }));
 
     sm::StateMachine inactive_region_task("inactive_region_task");
@@ -639,7 +642,7 @@ void testTransitionVariantsAndFaults() {
     internal.event = 2;
     internal.type = sm::TransitionType::kInternal;
     internal.action = [&](sm::StateContext&) {
-        log.push_back("action:internal");
+        log.emplace_back("action:internal");
         return sm::Status{};
     };
     assert(machine.addTransition(internal).ok());
@@ -648,7 +651,7 @@ void testTransitionVariantsAndFaults() {
     targetless.event = 3;
     targetless.type = sm::TransitionType::kTargetless;
     targetless.action = [&](sm::StateContext&) {
-        log.push_back("action:targetless");
+        log.emplace_back("action:targetless");
         return sm::Status{};
     };
     assert(machine.addTransition(targetless).ok());
@@ -758,7 +761,9 @@ void testTransitionVariantsAndFaults() {
     sm::TransitionRule guard_unknown = guard_std;
     guard_unknown.id = 0;
     guard_unknown.priority = 3;
-    guard_unknown.guard = [](const sm::GuardContext&) -> bool { throw 7; };
+    guard_unknown.guard = [](const sm::GuardContext&) -> bool {
+        throw 7;
+    };
     assert(fault_machine.addTransition(guard_unknown).ok());
     sm::TransitionRule action_bad;
     action_bad.from = 1;
@@ -771,12 +776,16 @@ void testTransitionVariantsAndFaults() {
     sm::TransitionRule action_std = action_bad;
     action_std.id = 0;
     action_std.event = 12;
-    action_std.action = [](sm::StateContext&) -> sm::Status { throw std::runtime_error("action std"); };
+    action_std.action = [](sm::StateContext&) -> sm::Status {
+        throw std::runtime_error("action std");
+    };
     assert(fault_machine.addTransition(action_std).ok());
     sm::TransitionRule action_unknown = action_bad;
     action_unknown.id = 0;
     action_unknown.event = 13;
-    action_unknown.action = [](sm::StateContext&) -> sm::Status { throw 7; };
+    action_unknown.action = [](sm::StateContext&) -> sm::Status {
+        throw 7;
+    };
     assert(fault_machine.addTransition(action_unknown).ok());
     assert(fault_machine.start().ok());
     fault_machine.postEvent(sm::Event(10));

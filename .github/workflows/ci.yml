@@ -10,7 +10,35 @@ on:
   workflow_dispatch:
 
 jobs:
+  cpp-quality:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install C++ quality tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            clang-format \
+            clang-tidy \
+            cmake \
+            cppcheck \
+            libgtest-dev
+
+      - name: Run C++ quality gate
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}"
+          ./.xgc2/scripts/check_cpp_quality.sh
+
   package-compliance:
+    needs: cpp-quality
     runs-on: ubuntu-latest
     defaults:
       run:

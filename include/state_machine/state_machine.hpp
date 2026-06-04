@@ -55,8 +55,7 @@ struct Status {
     explicit operator bool() const { return ok(); }
 };
 
-template <typename T>
-struct Result {
+template <typename T> struct Result {
     Status status;
     T value{};
     static Result<T> ok(T value) { return Result<T>{Status{}, std::move(value)}; }
@@ -82,8 +81,7 @@ struct Event {
     uint64_t sequence{0};
     Event() = default;
     explicit Event(EventId event_id) : id(event_id) {}
-    Event(EventId event_id, double event_time_sec)
-        : id(event_id), timestamp(event_time_sec) {}
+    Event(EventId event_id, double event_time_sec) : id(event_id), timestamp(event_time_sec) {}
 };
 
 struct FaultRecord {
@@ -179,33 +177,35 @@ struct ProcessedEventRecord {
 };
 
 class Clock {
-public:
+  public:
     virtual ~Clock() = default;
     virtual TimePoint now() const = 0;
 };
 
 class SteadyClock final : public Clock {
-public:
+  public:
     TimePoint now() const override { return std::chrono::steady_clock::now(); }
 };
 
 class StateMachine;
 
 class GuardContext {
-public:
+  public:
     GuardContext(const StateMachine& machine, const Event& event);
     TimePoint now() const;
     Duration elapsed(StateId state) const;
     MachineSnapshot snapshot() const;
     const Event& event() const { return event_; }
-private:
+
+  private:
     const StateMachine& machine_;
     const Event& event_;
 };
 
 class StateContext {
-public:
-    StateContext(StateMachine& machine, RegionId region, StateId state, const Event* event, size_t generated_events_before);
+  public:
+    StateContext(StateMachine& machine, RegionId region, StateId state, const Event* event,
+                 size_t generated_events_before);
     Status postEvent(Event event);
     TimePoint now() const;
     Duration elapsed(StateId state) const;
@@ -218,7 +218,8 @@ public:
     StateId state() const { return state_; }
     const Event* event() const { return event_; }
     size_t generatedEvents() const;
-private:
+
+  private:
     StateMachine& machine_;
     RegionId region_{0};
     StateId state_{0};
@@ -229,7 +230,7 @@ private:
 using ActionResult = Status;
 
 class State {
-public:
+  public:
     virtual ~State() = default;
     virtual std::string name() const = 0;
     virtual ActionResult onEnter(StateContext&) { return Status{}; }
@@ -264,9 +265,8 @@ struct RegionConfig {
 };
 
 class StateMachine {
-public:
-    explicit StateMachine(std::string name,
-                          RuntimeOptions options = {},
+  public:
+    explicit StateMachine(std::string name, RuntimeOptions options = {},
                           std::shared_ptr<Clock> clock = std::make_shared<SteadyClock>());
     ~StateMachine();
     StateMachine(const StateMachine&) = delete;
@@ -294,7 +294,8 @@ public:
     std::string name() const { return name_; }
     bool isActiveInPath(RegionId region, StateId state) const;
     size_t generatedEventCount() const;
-private:
+
+  private:
     friend class GuardContext;
     friend class StateContext;
     struct Impl;

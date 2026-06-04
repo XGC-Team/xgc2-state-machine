@@ -1,4 +1,5 @@
 .work/
+.ci/
 build/
 devel/
 install/

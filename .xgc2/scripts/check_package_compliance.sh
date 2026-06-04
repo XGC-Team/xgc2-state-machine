@@ -27,6 +27,8 @@ if git ls-files | grep -E '(^|/)(build|devel|install|\.catkin_tools|\.ci)(/|$)' 
 fi
 
 required_files=(
+  .clang-format
+  .clang-tidy
   README.md
   CMakeLists.txt
   cmake/xgc2_state_machineConfig.cmake.in
@@ -36,6 +38,7 @@ required_files=(
   .github/workflows/ci.yml
   .xgc2/product.yml
   .xgc2/scripts/build_deb.sh
+  .xgc2/scripts/check_cpp_quality.sh
   .xgc2/scripts/check_package_compliance.sh
   .xgc2/scripts/publish_self_hosted_apt.sh
   .xgc2/scripts/smoke_test_installed.sh

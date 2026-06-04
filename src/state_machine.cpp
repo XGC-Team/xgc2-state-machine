@@ -11,8 +11,7 @@
 namespace state_machine {
 namespace {
 
-template <typename T>
-void pushBounded(std::deque<T>& buffer, const T& value, size_t capacity) {
+template <typename T> void pushBounded(std::deque<T>& buffer, const T& value, size_t capacity) {
     const size_t normalized = std::max<size_t>(capacity, 1);
     buffer.push_back(value);
     while (buffer.size() > normalized) {
@@ -76,7 +75,7 @@ struct StateMachine::Impl {
     std::deque<EventLogRecord> event_log;
     std::deque<FaultRecord> fault_log;
 
-    explicit Impl(RuntimeOptions runtime_options, std::shared_ptr<Clock> runtime_clock)
+    explicit Impl(const RuntimeOptions& runtime_options, std::shared_ptr<Clock> runtime_clock)
         : options(runtime_options), clock(std::move(runtime_clock)) {
         if (!clock) {
             clock = std::make_shared<SteadyClock>();
@@ -113,9 +112,7 @@ struct StateMachine::Impl {
         return Status{};
     }
 
-    void log(EventLogRecord record) {
-        pushBounded(event_log, record, options.event_log_capacity);
-    }
+    void log(const EventLogRecord& record) { pushBounded(event_log, record, options.event_log_capacity); }
 
     Status enqueueEvent(Event event, bool bypass_capacity = false) {
         std::lock_guard<std::mutex> inbox_lock(inbox_mutex);
@@ -139,14 +136,9 @@ struct StateMachine::Impl {
         return Status{};
     }
 
-    FaultRecord recordFault(EventId event_id,
-                            uint64_t event_sequence,
-                            std::optional<StateId> state,
-                            std::optional<TransitionId> transition,
-                            CallbackKind callback,
-                            std::string message,
-                            CorrelationId correlation = 0,
-                            std::string exception_type = {}) {
+    FaultRecord recordFault(EventId event_id, uint64_t event_sequence, std::optional<StateId> state,
+                            std::optional<TransitionId> transition, CallbackKind callback, std::string message,
+                            CorrelationId correlation = 0, std::string exception_type = {}) {
         FaultRecord fault;
         fault.id = next_fault_id++;
         fault.timestamp = now();
@@ -260,48 +252,31 @@ struct StateMachine::Impl {
         }
     }
 
-    Status callStateCallback(StateId state,
-                             RegionId region,
-                             CallbackKind kind,
-                             const Event* event,
+    Status callStateCallback(StateId state, RegionId region, CallbackKind kind, const Event* event,
                              const std::function<ActionResult(State&, StateContext&)>& call) {
         auto it = states.find(state);
         if (it == states.end() || !it->second.state) {
-            return Status::error(ErrorCode::kNotFound, "state callback target not found"); // LCOV_EXCL_LINE: guarded by state graph validation.
+            return Status::error(
+                ErrorCode::kNotFound,
+                "state callback target not found"); // LCOV_EXCL_LINE: guarded by state graph validation.
         }
         StateContext ctx(*machine, region, state, event, generated_events);
         try {
             auto status = call(*it->second.state, ctx);
             if (!status.ok()) {
-                recordFault(event ? event->id : 0,
-                            event ? event->sequence : 0,
-                            state,
-                            std::nullopt,
-                            kind,
-                            status.message,
-                            event ? event->correlation_id : 0);
+                recordFault(event ? event->id : 0, event ? event->sequence : 0, state, std::nullopt, kind,
+                            status.message, event ? event->correlation_id : 0);
                 return status;
             }
             return Status{};
         } catch (const std::exception& ex) {
             const auto message = exceptionMessage(ex);
-            recordFault(event ? event->id : 0,
-                        event ? event->sequence : 0,
-                        state,
-                        std::nullopt,
-                        kind,
-                        message,
-                        event ? event->correlation_id : 0,
-                        typeid(ex).name());
+            recordFault(event ? event->id : 0, event ? event->sequence : 0, state, std::nullopt, kind, message,
+                        event ? event->correlation_id : 0, typeid(ex).name());
             return Status::error(ErrorCode::kFaulted, message);
         } catch (...) {
             const auto message = exceptionMessage();
-            recordFault(event ? event->id : 0,
-                        event ? event->sequence : 0,
-                        state,
-                        std::nullopt,
-                        kind,
-                        message,
+            recordFault(event ? event->id : 0, event ? event->sequence : 0, state, std::nullopt, kind, message,
                         event ? event->correlation_id : 0);
             return Status::error(ErrorCode::kFaulted, message);
         }
@@ -310,9 +285,8 @@ struct StateMachine::Impl {
     StateMachine* machine{nullptr};
 };
 
-StateMachine::StateMachine(std::string name,
-                                         RuntimeOptions options,
-                                         std::shared_ptr<Clock> clock)
+// cppcheck-suppress passedByValue ; keep public constructor ABI stable and copy into the pimpl.
+StateMachine::StateMachine(std::string name, RuntimeOptions options, std::shared_ptr<Clock> clock)
     : impl_(std::make_unique<Impl>(options, std::move(clock))), name_(std::move(name)) {
     impl_->machine = this;
 }
@@ -444,9 +418,10 @@ Status StateMachine::start() {
         for (StateId state : path) {
             impl_->states[state].active = true;
             impl_->states[state].entered_at = impl_->now();
-            auto cb_status = impl_->callStateCallback(
-                state, region_id, CallbackKind::kOnEnter, nullptr,
-                [](State& state, StateContext& ctx) { return state.onEnter(ctx); });
+            auto cb_status = impl_->callStateCallback(state, region_id, CallbackKind::kOnEnter, nullptr,
+                                                      [](State& active_state, StateContext& ctx) {
+                                                          return active_state.onEnter(ctx);
+                                                      });
             if (!cb_status.ok()) {
                 impl_->lifecycle = MachineLifecycle::kFaulted;
                 return cb_status;
@@ -562,7 +537,8 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
             return Result<UpdateResult>{owner_status, result};
         }
         if (impl_->update_in_progress) {
-            auto fault = impl_->recordFault(0, 0, std::nullopt, std::nullopt, CallbackKind::kRuntime, "update is non-reentrant");
+            auto fault =
+                impl_->recordFault(0, 0, std::nullopt, std::nullopt, CallbackKind::kRuntime, "update is non-reentrant");
             Event fault_event(kFaultEvent);
             fault_event.correlation_id = fault.correlation_id;
             impl_->enqueueEvent(fault_event, true);
@@ -617,10 +593,10 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                 continue;
             }
             StateId leaf = region_it->second.active_leaf;
-            const auto status = impl_->callStateCallback(
-                leaf, region_id, CallbackKind::kOnTick, nullptr,
-                [](State& state, StateContext& ctx) { return state.onTick(ctx); });
-            result.generated_events += status.ok() ? 0 : 0;
+            const auto status = impl_->callStateCallback(leaf, region_id, CallbackKind::kOnTick, nullptr,
+                                                         [](State& state, StateContext& ctx) {
+                                                             return state.onTick(ctx);
+                                                         });
             if (!status.ok()) {
                 ++result.faults_recorded;
             }
@@ -724,9 +700,10 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                 }
                 if (!found && region_it->second.active_leaf != 0) {
                     StateId leaf = region_it->second.active_leaf;
-                    auto status = impl_->callStateCallback(
-                        leaf, region_id, CallbackKind::kOnEvent, &event,
-                        [&](State& state, StateContext& ctx) { return state.onEvent(ctx, event); });
+                    auto status = impl_->callStateCallback(leaf, region_id, CallbackKind::kOnEvent, &event,
+                                                           [&](State& state, StateContext& ctx) {
+                                                               return state.onEvent(ctx, event);
+                                                           });
                     if (!status.ok()) {
                         ++result.faults_recorded;
                     }
@@ -749,14 +726,16 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
             RegionId region_id = candidate.region;
             StateId from_leaf = impl_->regions[region_id].active_leaf;
             StateId to_leaf = rule.target.value_or(from_leaf);
-            const bool no_exit_enter = rule.type == TransitionType::kInternal || rule.type == TransitionType::kTargetless;
+            const bool no_exit_enter =
+                rule.type == TransitionType::kInternal || rule.type == TransitionType::kTargetless;
             std::vector<StateId> exit_path;
             std::vector<StateId> enter_path;
             if (!no_exit_enter) {
                 const auto from_path = impl_->pathToRoot(from_leaf);
                 const auto to_path = impl_->pathToRoot(to_leaf);
-                size_t prefix = rule.type == TransitionType::kExternalSelf && from_leaf == to_leaf ? from_path.size() - 1
-                                                                                                  : impl_->commonPrefix(from_path, to_path);
+                size_t prefix = rule.type == TransitionType::kExternalSelf && from_leaf == to_leaf
+                                    ? from_path.size() - 1
+                                    : impl_->commonPrefix(from_path, to_path);
                 for (size_t i = from_path.size(); i > prefix; --i) {
                     exit_path.push_back(from_path[i - 1]);
                 }
@@ -767,9 +746,10 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
 
             for (StateId state : exit_path) {
                 impl_->cancelTasksForStateExit(state);
-                auto status = impl_->callStateCallback(
-                    state, region_id, CallbackKind::kOnExit, &event,
-                    [](State& state, StateContext& ctx) { return state.onExit(ctx); });
+                auto status = impl_->callStateCallback(state, region_id, CallbackKind::kOnExit, &event,
+                                                       [](State& active_state, StateContext& ctx) {
+                                                           return active_state.onExit(ctx);
+                                                       });
                 impl_->states[state].active = false;
                 if (!status.ok()) {
                     ++result.faults_recorded;
@@ -803,9 +783,10 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                             auto other_path = impl_->pathToRoot(impl_->regions[id].active_leaf);
                             for (auto it = other_path.rbegin(); it != other_path.rend(); ++it) {
                                 impl_->cancelTasksForStateExit(*it);
-                                auto status = impl_->callStateCallback(
-                                    *it, id, CallbackKind::kOnExit, &event,
-                                    [](State& state, StateContext& ctx) { return state.onExit(ctx); });
+                                auto status = impl_->callStateCallback(*it, id, CallbackKind::kOnExit, &event,
+                                                                       [](State& active_state, StateContext& ctx) {
+                                                                           return active_state.onExit(ctx);
+                                                                       });
                                 if (!status.ok()) {
                                     ++result.faults_recorded;
                                 }
@@ -820,9 +801,10 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                 for (StateId state : enter_path) {
                     impl_->states[state].active = true;
                     impl_->states[state].entered_at = impl_->now();
-                    auto status = impl_->callStateCallback(
-                        state, region_id, CallbackKind::kOnEnter, &event,
-                        [](State& state, StateContext& ctx) { return state.onEnter(ctx); });
+                    auto status = impl_->callStateCallback(state, region_id, CallbackKind::kOnEnter, &event,
+                                                           [](State& active_state, StateContext& ctx) {
+                                                               return active_state.onEnter(ctx);
+                                                           });
                     if (!status.ok()) {
                         ++result.faults_recorded;
                     }
@@ -860,9 +842,10 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                 auto path = impl_->pathToRoot(region.active_leaf);
                 for (auto it = path.rbegin(); it != path.rend(); ++it) {
                     impl_->cancelTasksForStateExit(*it);
-                    auto status = impl_->callStateCallback(
-                        *it, region_id, CallbackKind::kOnExit, nullptr,
-                        [](State& state, StateContext& ctx) { return state.onExit(ctx); });
+                    auto status = impl_->callStateCallback(*it, region_id, CallbackKind::kOnExit, nullptr,
+                                                           [](State& active_state, StateContext& ctx) {
+                                                               return active_state.onExit(ctx);
+                                                           });
                     if (!status.ok()) {
                         ++result.faults_recorded;
                     }
@@ -960,7 +943,9 @@ Duration StateMachine::elapsed(StateId state) const {
     return impl_->now() - it->second.entered_at;
 }
 
-TimePoint StateMachine::now() const { return impl_->now(); }
+TimePoint StateMachine::now() const {
+    return impl_->now();
+}
 
 bool StateMachine::isActiveInPath(RegionId region, StateId state) const {
     std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
@@ -972,27 +957,32 @@ size_t StateMachine::generatedEventCount() const {
     return impl_->generated_events;
 }
 
-GuardContext::GuardContext(const StateMachine& machine, const Event& event)
-    : machine_(machine), event_(event) {}
+GuardContext::GuardContext(const StateMachine& machine, const Event& event) : machine_(machine), event_(event) {}
 
-TimePoint GuardContext::now() const { return machine_.now(); }
-Duration GuardContext::elapsed(StateId state) const { return machine_.elapsed(state); }
-MachineSnapshot GuardContext::snapshot() const { return machine_.snapshot(); }
+TimePoint GuardContext::now() const {
+    return machine_.now();
+}
+Duration GuardContext::elapsed(StateId state) const {
+    return machine_.elapsed(state);
+}
+MachineSnapshot GuardContext::snapshot() const {
+    return machine_.snapshot();
+}
 
-StateContext::StateContext(StateMachine& machine,
-                           RegionId region,
-                           StateId state,
-                           const Event* event,
+StateContext::StateContext(StateMachine& machine, RegionId region, StateId state, const Event* event,
                            size_t generated_events_before)
-    : machine_(machine),
-      region_(region),
-      state_(state),
-      event_(event),
+    : machine_(machine), region_(region), state_(state), event_(event),
       generated_events_before_(generated_events_before) {}
 
-Status StateContext::postEvent(Event event) { return machine_.postEvent(std::move(event)); }
-TimePoint StateContext::now() const { return machine_.now(); }
-Duration StateContext::elapsed(StateId state) const { return machine_.elapsed(state); }
+Status StateContext::postEvent(Event event) {
+    return machine_.postEvent(std::move(event));
+}
+TimePoint StateContext::now() const {
+    return machine_.now();
+}
+Duration StateContext::elapsed(StateId state) const {
+    return machine_.elapsed(state);
+}
 
 Result<TaskHandle> StateContext::startTask(TaskCancelPolicy policy, CorrelationId correlation_id) {
     auto& impl = *machine_.impl_;
@@ -1013,9 +1003,17 @@ Result<TaskHandle> StateContext::startTask(TaskCancelPolicy policy, CorrelationI
     return Result<TaskHandle>::ok(handle);
 }
 
-Status StateContext::cancelTask(TaskHandle handle) { return machine_.cancelTask(handle); }
-StateId StateContext::currentState(RegionId region) const { return machine_.currentState(region); }
-MachineSnapshot StateContext::snapshot() const { return machine_.snapshot(); }
-size_t StateContext::generatedEvents() const { return machine_.generatedEventCount() - generated_events_before_; }
+Status StateContext::cancelTask(TaskHandle handle) {
+    return machine_.cancelTask(handle);
+}
+StateId StateContext::currentState(RegionId region) const {
+    return machine_.currentState(region);
+}
+MachineSnapshot StateContext::snapshot() const {
+    return machine_.snapshot();
+}
+size_t StateContext::generatedEvents() const {
+    return machine_.generatedEventCount() - generated_events_before_;
+}
 
 } // namespace state_machine
