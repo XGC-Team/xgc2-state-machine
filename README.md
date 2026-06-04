@@ -112,7 +112,7 @@ void setup() {
         throw std::runtime_error(status.message);
     }
 
-    status = machine.setInitialState(sm::kDefaultRegion, kIdle);
+    status = machine.setInitialState({sm::kDefaultRegion, kIdle});
     if (!status.ok()) {
         throw std::runtime_error(status.message);
     }
@@ -151,7 +151,7 @@ Common machine calls:
 
 - `addState(StateConfig, std::unique_ptr<State>)`
 - `addTransition(TransitionRule)`
-- `setInitialState(RegionId, StateId)`
+- `setInitialState({RegionId, StateId})`
 - `start()`
 - `postEvent(Event)`
 - `update(UpdateOptions)`

@@ -72,6 +72,11 @@ enum class FaultSeverity { kWarning, kError, kFatal };
 enum class TaskStatus { kCompleted, kFailed, kCancelled, kTimeout, kStale };
 enum class TaskCancelPolicy { kKeepRunning, kCancelOnStateExit, kCancelOnRegionExit, kCancelOnMachineStop };
 
+struct EventTimestamp {
+    double seconds{0.0};
+    explicit EventTimestamp(double value) : seconds(value) {}
+};
+
 struct Event {
     EventId id{0};
     double timestamp{0.0};
@@ -81,7 +86,7 @@ struct Event {
     uint64_t sequence{0};
     Event() = default;
     explicit Event(EventId event_id) : id(event_id) {}
-    Event(EventId event_id, double event_time_sec) : id(event_id), timestamp(event_time_sec) {}
+    Event(EventId event_id, EventTimestamp event_time) : id(event_id), timestamp(event_time.seconds) {}
 };
 
 struct FaultRecord {
@@ -112,6 +117,11 @@ struct RuntimeOptions {
     size_t max_pending_events{4096};
     bool allow_prestart_events{false};
     size_t max_fault_depth{2};
+};
+
+struct StateSelection {
+    RegionId region{kDefaultRegion};
+    StateId state{0};
 };
 
 struct UpdateOptions {
@@ -204,8 +214,13 @@ class GuardContext {
 
 class StateContext {
   public:
-    StateContext(StateMachine& machine, RegionId region, StateId state, const Event* event,
-                 size_t generated_events_before);
+    struct Config {
+        StateSelection selection;
+        const Event* event{nullptr};
+        size_t generated_events_before{0};
+    };
+
+    StateContext(StateMachine& machine, const Config& config);
     Status postEvent(Event event);
     TimePoint now() const;
     Duration elapsed(StateId state) const;
@@ -214,15 +229,14 @@ class StateContext {
     Status cancelTask(TaskHandle handle);
     StateId currentState(RegionId region) const;
     MachineSnapshot snapshot() const;
-    RegionId region() const { return region_; }
-    StateId state() const { return state_; }
+    RegionId region() const { return selection_.region; }
+    StateId state() const { return selection_.state; }
     const Event* event() const { return event_; }
     size_t generatedEvents() const;
 
   private:
     StateMachine& machine_;
-    RegionId region_{0};
-    StateId state_{0};
+    StateSelection selection_;
     const Event* event_{nullptr};
     size_t generated_events_before_{0};
 };
@@ -275,7 +289,7 @@ class StateMachine {
     Status addRegion(RegionConfig config);
     Status addState(StateConfig config, std::unique_ptr<State> state);
     Status addTransition(TransitionRule rule);
-    Status setInitialState(RegionId region, StateId state);
+    Status setInitialState(StateSelection selection);
     Status start();
     Status stop();
     Result<UpdateResult> update(UpdateOptions options = {});
@@ -292,7 +306,7 @@ class StateMachine {
     Duration elapsed(StateId state) const;
     TimePoint now() const;
     std::string name() const { return name_; }
-    bool isActiveInPath(RegionId region, StateId state) const;
+    bool isActiveInPath(StateSelection selection) const;
     size_t generatedEventCount() const;
 
   private:

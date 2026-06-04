@@ -30,6 +30,34 @@ std::string exceptionMessage(...) {
 } // namespace
 
 struct StateMachine::Impl {
+    struct FaultInput {
+        EventId event_id{0};
+        uint64_t event_sequence{0};
+        std::optional<StateId> state;
+        std::optional<TransitionId> transition;
+        CallbackKind callback{CallbackKind::kRuntime};
+        std::string message;
+        CorrelationId correlation{0};
+        std::string exception_type;
+    };
+
+    static FaultInput faultInput(const Event* event, std::optional<StateId> state,
+                                 std::optional<TransitionId> transition, CallbackKind callback, std::string message,
+                                 std::string exception_type = {}) {
+        FaultInput input;
+        if (event) {
+            input.event_id = event->id;
+            input.event_sequence = event->sequence;
+            input.correlation = event->correlation_id;
+        }
+        input.state = state;
+        input.transition = transition;
+        input.callback = callback;
+        input.message = std::move(message);
+        input.exception_type = std::move(exception_type);
+        return input;
+    }
+
     struct StateEntry {
         StateConfig config;
         std::unique_ptr<State> state;
@@ -136,27 +164,25 @@ struct StateMachine::Impl {
         return Status{};
     }
 
-    FaultRecord recordFault(EventId event_id, uint64_t event_sequence, std::optional<StateId> state,
-                            std::optional<TransitionId> transition, CallbackKind callback, std::string message,
-                            CorrelationId correlation = 0, std::string exception_type = {}) {
+    FaultRecord recordFault(FaultInput input) {
         FaultRecord fault;
         fault.id = next_fault_id++;
         fault.timestamp = now();
-        fault.event_sequence = event_sequence;
-        fault.triggering_event = event_id;
-        fault.state = state;
-        fault.transition = transition;
-        fault.callback_kind = callback;
-        fault.message = std::move(message);
-        fault.exception_type = std::move(exception_type);
-        fault.correlation_id = correlation;
+        fault.event_sequence = input.event_sequence;
+        fault.triggering_event = input.event_id;
+        fault.state = input.state;
+        fault.transition = input.transition;
+        fault.callback_kind = input.callback;
+        fault.message = std::move(input.message);
+        fault.exception_type = std::move(input.exception_type);
+        fault.correlation_id = input.correlation;
         pushBounded(fault_log, fault, options.fault_log_capacity);
         EventLogRecord log_record;
         log_record.kind = EventLogRecord::Kind::kCallbackFault;
-        log_record.sequence = event_sequence;
-        log_record.event_id = event_id;
-        log_record.transition = transition;
-        log_record.from_state = state.value_or(0);
+        log_record.sequence = fault.event_sequence;
+        log_record.event_id = fault.triggering_event;
+        log_record.transition = fault.transition;
+        log_record.from_state = fault.state.value_or(0);
         log_record.message = fault.message;
         log(log_record);
         return fault;
@@ -178,13 +204,13 @@ struct StateMachine::Impl {
         return path;
     }
 
-    bool activeInPath(RegionId region, StateId state) const {
-        const auto region_it = regions.find(region);
+    bool activeInPath(StateSelection selection) const {
+        const auto region_it = regions.find(selection.region);
         if (region_it == regions.end()) {
             return false;
         }
         const auto path = pathToRoot(region_it->second.active_leaf);
-        return std::find(path.begin(), path.end(), state) != path.end();
+        return std::find(path.begin(), path.end(), selection.state) != path.end();
     }
 
     RegionId stateRegion(StateId state) const {
@@ -260,24 +286,21 @@ struct StateMachine::Impl {
                 ErrorCode::kNotFound,
                 "state callback target not found"); // LCOV_EXCL_LINE: guarded by state graph validation.
         }
-        StateContext ctx(*machine, region, state, event, generated_events);
+        StateContext ctx(*machine, StateContext::Config{{region, state}, event, generated_events});
         try {
             auto status = call(*it->second.state, ctx);
             if (!status.ok()) {
-                recordFault(event ? event->id : 0, event ? event->sequence : 0, state, std::nullopt, kind,
-                            status.message, event ? event->correlation_id : 0);
+                recordFault(faultInput(event, state, std::nullopt, kind, status.message));
                 return status;
             }
             return Status{};
         } catch (const std::exception& ex) {
             const auto message = exceptionMessage(ex);
-            recordFault(event ? event->id : 0, event ? event->sequence : 0, state, std::nullopt, kind, message,
-                        event ? event->correlation_id : 0, typeid(ex).name());
+            recordFault(faultInput(event, state, std::nullopt, kind, message, typeid(ex).name()));
             return Status::error(ErrorCode::kFaulted, message);
         } catch (...) {
             const auto message = exceptionMessage();
-            recordFault(event ? event->id : 0, event ? event->sequence : 0, state, std::nullopt, kind, message,
-                        event ? event->correlation_id : 0);
+            recordFault(faultInput(event, state, std::nullopt, kind, message));
             return Status::error(ErrorCode::kFaulted, message);
         }
     }
@@ -370,27 +393,27 @@ Status StateMachine::addTransition(TransitionRule rule) {
     return Status{};
 }
 
-Status StateMachine::setInitialState(RegionId region, StateId state) {
+Status StateMachine::setInitialState(StateSelection selection) {
     std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
     auto status = impl_->ensureConfiguring("setInitialState");
     if (!status.ok()) {
         return status;
     }
-    const auto state_it = impl_->states.find(state);
+    const auto state_it = impl_->states.find(selection.state);
     if (state_it == impl_->states.end()) {
         return Status::error(ErrorCode::kNotFound, "initial state is not registered");
     }
-    if (impl_->regions.count(region) == 0) {
+    if (impl_->regions.count(selection.region) == 0) {
         RegionConfig config;
-        config.id = region;
-        config.name = "region_" + std::to_string(region);
-        config.initial_state = state;
-        impl_->regions[region] = StateMachine::Impl::RegionEntry{config, 0};
-        impl_->region_order.push_back(region);
+        config.id = selection.region;
+        config.name = "region_" + std::to_string(selection.region);
+        config.initial_state = selection.state;
+        impl_->regions[selection.region] = StateMachine::Impl::RegionEntry{config, 0};
+        impl_->region_order.push_back(selection.region);
     }
-    auto& entry = impl_->regions[region];
-    entry.config.initial_state = state;
-    entry.active_leaf = state;
+    auto& entry = impl_->regions[selection.region];
+    entry.config.initial_state = selection.state;
+    entry.active_leaf = selection.state;
     return Status{};
 }
 
@@ -471,7 +494,7 @@ Status StateMachine::postTaskResult(TaskHandle handle, TaskStatus status, EventP
     {
         std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
         const auto it = impl_->tasks.find(handle.id);
-        const bool active_path = impl_->activeInPath(handle.owner_region, handle.owner_state);
+        const bool active_path = impl_->activeInPath({handle.owner_region, handle.owner_state});
         const bool stale = it == impl_->tasks.end() || !it->second.active ||
                            it->second.handle.correlation_id != handle.correlation_id || !active_path;
         if (stale) {
@@ -537,8 +560,8 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
             return Result<UpdateResult>{owner_status, result};
         }
         if (impl_->update_in_progress) {
-            auto fault =
-                impl_->recordFault(0, 0, std::nullopt, std::nullopt, CallbackKind::kRuntime, "update is non-reentrant");
+            auto fault = impl_->recordFault(StateMachine::Impl::faultInput(
+                nullptr, std::nullopt, std::nullopt, CallbackKind::kRuntime, "update is non-reentrant"));
             Event fault_event(kFaultEvent);
             fault_event.correlation_id = fault.correlation_id;
             impl_->enqueueEvent(fault_event, true);
@@ -646,13 +669,13 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                 return rule.guard(ctx);
             } catch (const std::exception& ex) {
                 ++result.faults_recorded;
-                impl_->recordFault(event.id, event.sequence, rule.from, rule.id, CallbackKind::kGuard,
-                                   exceptionMessage(ex), event.correlation_id, typeid(ex).name());
+                impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id, CallbackKind::kGuard,
+                                                                  exceptionMessage(ex), typeid(ex).name()));
                 return false;
             } catch (...) {
                 ++result.faults_recorded;
-                impl_->recordFault(event.id, event.sequence, rule.from, rule.id, CallbackKind::kGuard,
-                                   exceptionMessage(), event.correlation_id);
+                impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id, CallbackKind::kGuard,
+                                                                  exceptionMessage()));
                 return false;
             }
         };
@@ -663,7 +686,7 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                 continue;
             }
             const RegionId rule_region = rule.region == 0 ? impl_->stateRegion(rule.from) : rule.region;
-            if (!impl_->activeInPath(rule_region, rule.from)) {
+            if (!impl_->activeInPath({rule_region, rule.from})) {
                 continue;
             }
             if (evaluate_guard(rule)) {
@@ -758,21 +781,22 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
 
             if (rule.action) {
                 try {
-                    StateContext ctx(*this, region_id, rule.from, &event, impl_->generated_events);
+                    StateContext ctx(*this,
+                                     StateContext::Config{{region_id, rule.from}, &event, impl_->generated_events});
                     auto status = rule.action(ctx);
                     if (!status.ok()) {
                         ++result.faults_recorded;
-                        impl_->recordFault(event.id, event.sequence, rule.from, rule.id, CallbackKind::kAction,
-                                           status.message, event.correlation_id);
+                        impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id,
+                                                                          CallbackKind::kAction, status.message));
                     }
                 } catch (const std::exception& ex) {
                     ++result.faults_recorded;
-                    impl_->recordFault(event.id, event.sequence, rule.from, rule.id, CallbackKind::kAction,
-                                       exceptionMessage(ex), event.correlation_id, typeid(ex).name());
+                    impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id, CallbackKind::kAction,
+                                                                      exceptionMessage(ex), typeid(ex).name()));
                 } catch (...) {
                     ++result.faults_recorded;
-                    impl_->recordFault(event.id, event.sequence, rule.from, rule.id, CallbackKind::kAction,
-                                       exceptionMessage(), event.correlation_id);
+                    impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id, CallbackKind::kAction,
+                                                                      exceptionMessage()));
                 }
             }
 
@@ -947,9 +971,9 @@ TimePoint StateMachine::now() const {
     return impl_->now();
 }
 
-bool StateMachine::isActiveInPath(RegionId region, StateId state) const {
+bool StateMachine::isActiveInPath(StateSelection selection) const {
     std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
-    return impl_->activeInPath(region, state);
+    return impl_->activeInPath(selection);
 }
 
 size_t StateMachine::generatedEventCount() const {
@@ -969,10 +993,9 @@ MachineSnapshot GuardContext::snapshot() const {
     return machine_.snapshot();
 }
 
-StateContext::StateContext(StateMachine& machine, RegionId region, StateId state, const Event* event,
-                           size_t generated_events_before)
-    : machine_(machine), region_(region), state_(state), event_(event),
-      generated_events_before_(generated_events_before) {}
+StateContext::StateContext(StateMachine& machine, const Config& config)
+    : machine_(machine), selection_(config.selection), event_(config.event),
+      generated_events_before_(config.generated_events_before) {}
 
 Status StateContext::postEvent(Event event) {
     return machine_.postEvent(std::move(event));
@@ -989,15 +1012,15 @@ Result<TaskHandle> StateContext::startTask(TaskCancelPolicy policy, CorrelationI
     std::lock_guard<std::recursive_mutex> lock(impl.state_mutex);
     TaskHandle handle;
     handle.id = impl.next_task_id++;
-    handle.owner_state = state_;
-    handle.owner_region = region_;
+    handle.owner_state = selection_.state;
+    handle.owner_region = selection_.region;
     handle.correlation_id = correlation_id == 0 ? handle.id : correlation_id;
     handle.started_at = impl.now();
     impl.tasks[handle.id] = StateMachine::Impl::TaskEntry{handle, policy, true, false};
     EventLogRecord record;
     record.kind = EventLogRecord::Kind::kTaskStarted;
-    record.region = region_;
-    record.from_state = state_;
+    record.region = selection_.region;
+    record.from_state = selection_.state;
     record.message = "task started";
     impl.log(record);
     return Result<TaskHandle>::ok(handle);

@@ -145,7 +145,7 @@ void testFifoAndSnapshot() {
     auto state = std::make_unique<RecordingState>("A", log);
     state->post_on_event = {3, 4};
     addState(machine, 1, sm::kDefaultRegion, std::nullopt, std::move(state));
-    assert(machine.setInitialState(sm::kDefaultRegion, 1).ok());
+    assert(machine.setInitialState({sm::kDefaultRegion, 1}).ok());
     assert(machine.start().ok());
     assert(machine.postEvent(sm::Event(1)).ok());
     assert(machine.postEvent(sm::Event(2)).ok());
@@ -167,7 +167,7 @@ void testThreadedSequence() {
     std::vector<std::string> log;
     sm::StateMachine machine("threaded");
     addState(machine, 1, sm::kDefaultRegion, std::nullopt, std::make_unique<RecordingState>("A", log));
-    assert(machine.setInitialState(sm::kDefaultRegion, 1).ok());
+    assert(machine.setInitialState({sm::kDefaultRegion, 1}).ok());
     assert(machine.start().ok());
     std::thread t1([&] {
         assert(machine.postEvent(sm::Event(10)).ok());
@@ -177,8 +177,8 @@ void testThreadedSequence() {
     });
     t1.join();
     t2.join();
-    sm::Event old_timestamp(30, -1000.0);
-    sm::Event new_timestamp(40, 1000.0);
+    sm::Event old_timestamp(30, sm::EventTimestamp{-1000.0});
+    sm::Event new_timestamp(40, sm::EventTimestamp{1000.0});
     assert(machine.postEvent(old_timestamp).ok());
     assert(machine.postEvent(new_timestamp).ok());
     auto result = machine.update({64, 64, false});
@@ -198,7 +198,7 @@ void testOwnerThreadAndReentrantUpdate() {
     auto state = std::make_unique<RecordingState>("A", log);
     state->reenter_machine = &machine;
     addState(machine, 1, sm::kDefaultRegion, std::nullopt, std::move(state));
-    assert(machine.setInitialState(sm::kDefaultRegion, 1).ok());
+    assert(machine.setInitialState({sm::kDefaultRegion, 1}).ok());
     assert(machine.start().ok());
     std::thread other([&] {
         auto result = machine.update({64, 64, false});
@@ -215,7 +215,7 @@ void testBoundedSnapshotLimit() {
     std::vector<std::string> log;
     sm::StateMachine machine("bounded");
     addState(machine, 1, 1, std::nullopt, std::make_unique<RecordingState>("A", log));
-    assert(machine.setInitialState(1, 1).ok());
+    assert(machine.setInitialState({1, 1}).ok());
     assert(machine.start().ok());
     assert(machine.postEvent(sm::Event(1)).ok());
     assert(machine.postEvent(sm::Event(2)).ok());
@@ -241,7 +241,7 @@ void testTransitionLimitRequeuesUnprocessedEvents() {
     to_c.target = 3;
     to_c.event = 2;
     assert(machine.addTransition(to_c).ok());
-    assert(machine.setInitialState(1, 1).ok());
+    assert(machine.setInitialState({1, 1}).ok());
     assert(machine.start().ok());
     assert(machine.postEvent(sm::Event(1)).ok());
     assert(machine.postEvent(sm::Event(2)).ok());
@@ -265,7 +265,7 @@ void testHierarchyAndExternalSelf() {
     addState(machine, 2, 1, 1, std::make_unique<RecordingState>("A", log));
     addState(machine, 3, 1, 2, std::make_unique<RecordingState>("A1", log));
     addState(machine, 4, 1, 2, std::make_unique<RecordingState>("A2", log));
-    assert(machine.setInitialState(1, 3).ok());
+    assert(machine.setInitialState({1, 3}).ok());
     sm::TransitionRule to_a2;
     to_a2.from = 3;
     to_a2.target = 4;
@@ -335,7 +335,7 @@ void testParallelAndGlobal() {
     addState(inactive_global, 1, 1, std::nullopt, std::make_unique<RecordingState>("Idle", inactive_log));
     addState(inactive_global, 2, 1, std::nullopt, std::make_unique<RecordingState>("Active", inactive_log));
     addState(inactive_global, 3, 1, std::nullopt, std::make_unique<RecordingState>("Emergency", inactive_log));
-    assert(inactive_global.setInitialState(1, 1).ok());
+    assert(inactive_global.setInitialState({1, 1}).ok());
     sm::TransitionRule to_active;
     to_active.from = 1;
     to_active.target = 2;
@@ -365,7 +365,7 @@ void testTaskStaleFaultStopAndLimits() {
     auto* state_ptr = state.get();
     addState(machine, 1, 1, std::nullopt, std::move(state));
     addState(machine, 2, 1, std::nullopt, std::make_unique<RecordingState>("B", log));
-    assert(machine.setInitialState(1, 1).ok());
+    assert(machine.setInitialState({1, 1}).ok());
     sm::TransitionRule to_b;
     to_b.from = 1;
     to_b.target = 2;
@@ -387,7 +387,7 @@ void testTaskStaleFaultStopAndLimits() {
         status_state->start_task_on_tick = true;
         auto* status_state_ptr = status_state.get();
         addState(status_machine, 1, 1, std::nullopt, std::move(status_state));
-        assert(status_machine.setInitialState(1, 1).ok());
+        assert(status_machine.setInitialState({1, 1}).ok());
         assert(status_machine.start().ok());
         status_machine.update({0, 64, true});
         assert(status_machine.postTaskResult(status_state_ptr->last_task, status).ok());
@@ -406,7 +406,7 @@ void testTaskStaleFaultStopAndLimits() {
     stop_state->start_task_on_tick = true;
     stop_state->task_policy = sm::TaskCancelPolicy::kCancelOnMachineStop;
     addState(stop_task_machine, 1, 1, std::nullopt, std::move(stop_state));
-    assert(stop_task_machine.setInitialState(1, 1).ok());
+    assert(stop_task_machine.setInitialState({1, 1}).ok());
     assert(stop_task_machine.start().ok());
     stop_task_machine.update({0, 64, true});
     std::thread stop_thread([&] {
@@ -425,7 +425,7 @@ void testTaskStaleFaultStopAndLimits() {
     bad->tick_status = sm::Status::error(sm::ErrorCode::kFaulted, "tick failed");
     sm::StateMachine fault_machine("fault");
     addState(fault_machine, 1, 1, std::nullopt, std::move(bad));
-    assert(fault_machine.setInitialState(1, 1).ok());
+    assert(fault_machine.setInitialState({1, 1}).ok());
     assert(fault_machine.start().ok());
     auto fault_result = fault_machine.update({64, 64, true});
     assert(fault_result.value.faults_recorded == 1);
@@ -458,14 +458,14 @@ void testLifecycleErrorsAndAccessors() {
     missing_target.from = 1;
     missing_target.target = 44;
     assert(!machine.addTransition(missing_target).ok());
-    assert(!machine.setInitialState(7, 44).ok());
-    assert(machine.setInitialState(7, 1).ok());
+    assert(!machine.setInitialState({7, 44}).ok());
+    assert(machine.setInitialState({7, 1}).ok());
     assert(machine.start().ok());
     assert(machine.lifecycle() == sm::MachineLifecycle::kRunning);
     assert(machine.elapsed(99) == sm::Duration::zero());
     (void)machine.now();
-    assert(machine.isActiveInPath(7, 1));
-    assert(!machine.isActiveInPath(77, 1));
+    assert(machine.isActiveInPath({7, 1}));
+    assert(!machine.isActiveInPath({77, 1}));
     assert(machine.currentState(77) == 0);
     assert(machine.currentStateName(7) == "A");
     assert(machine.currentStateName(77).empty());
@@ -473,7 +473,7 @@ void testLifecycleErrorsAndAccessors() {
     assert(
         !machine.addState(sm::StateConfig{3, std::nullopt, 8}, std::make_unique<RecordingState>("Frozen", log)).ok());
     assert(!machine.addTransition(missing_target).ok());
-    assert(!machine.setInitialState(7, 1).ok());
+    assert(!machine.setInitialState({7, 1}).ok());
     assert(machine.postEvent(sm::Event(91)).ok());
     assert(machine.postEvent(sm::Event(92)).ok());
     machine.update({64, 64, false});
@@ -499,7 +499,7 @@ void testLifecycleErrorsAndAccessors() {
     auto bad = std::make_unique<RecordingState>("BadEnter", log);
     bad->enter_status = sm::Status::error(sm::ErrorCode::kFaulted, "enter failed");
     addState(bad_enter, 1, 1, std::nullopt, std::move(bad));
-    assert(bad_enter.setInitialState(1, 1).ok());
+    assert(bad_enter.setInitialState({1, 1}).ok());
     assert(!bad_enter.start().ok());
     assert(bad_enter.lifecycle() == sm::MachineLifecycle::kFaulted);
     assert(!bad_enter.update({64, 64, false}).ok());
@@ -507,11 +507,11 @@ void testLifecycleErrorsAndAccessors() {
 
     sm::StateMachine cross_region_initial("cross_region_initial");
     addState(cross_region_initial, 1, 1, std::nullopt, std::make_unique<RecordingState>("A", log));
-    assert(cross_region_initial.setInitialState(8, 1).ok());
+    assert(cross_region_initial.setInitialState({8, 1}).ok());
 
     sm::StateMachine double_start("double_start");
     addState(double_start, 1, 1, std::nullopt, std::make_unique<RecordingState>("A", log));
-    assert(double_start.setInitialState(1, 1).ok());
+    assert(double_start.setInitialState({1, 1}).ok());
     assert(double_start.start().ok());
     assert(!double_start.start().ok());
 
@@ -528,7 +528,7 @@ void testLifecycleErrorsAndAccessors() {
     auto faulting = std::make_unique<RecordingState>("Faulting", log);
     faulting->event_status = sm::Status::error(sm::ErrorCode::kFaulted, "event failed");
     addState(fault_ring, 1, 1, std::nullopt, std::move(faulting));
-    assert(fault_ring.setInitialState(1, 1).ok());
+    assert(fault_ring.setInitialState({1, 1}).ok());
     assert(fault_ring.start().ok());
     fault_ring.postEvent(sm::Event(1));
     fault_ring.postEvent(sm::Event(2));
@@ -547,7 +547,7 @@ void testContextTasksAndRegionCancel() {
     auto* active_ptr = active.get();
     addState(machine, 1, 1, std::nullopt, std::move(active));
     addState(machine, 2, 1, std::nullopt, std::make_unique<RecordingState>("Other", log));
-    assert(machine.setInitialState(1, 1).ok());
+    assert(machine.setInitialState({1, 1}).ok());
     assert(machine.start().ok());
     clock->advance(std::chrono::milliseconds(5));
     machine.update({0, 64, true});
@@ -571,8 +571,8 @@ void testContextTasksAndRegionCancel() {
     region_state->task_policy = sm::TaskCancelPolicy::kCancelOnRegionExit;
     addState(cancel_machine, 10, 2, std::nullopt, std::move(region_state));
     addState(cancel_machine, 2, 1, std::nullopt, std::make_unique<RecordingState>("Safe", cancel_log));
-    assert(cancel_machine.setInitialState(1, 1).ok());
-    assert(cancel_machine.setInitialState(2, 10).ok());
+    assert(cancel_machine.setInitialState({1, 1}).ok());
+    assert(cancel_machine.setInitialState({2, 10}).ok());
     sm::TransitionRule global;
     global.from = 1;
     global.target = 2;
@@ -599,8 +599,8 @@ void testContextTasksAndRegionCancel() {
     auto* inactive_state_ptr = inactive_state.get();
     addState(inactive_region_task, 10, 2, std::nullopt, std::move(inactive_state));
     addState(inactive_region_task, 2, 1, std::nullopt, std::make_unique<RecordingState>("Safe", inactive_log));
-    assert(inactive_region_task.setInitialState(1, 1).ok());
-    assert(inactive_region_task.setInitialState(2, 10).ok());
+    assert(inactive_region_task.setInitialState({1, 1}).ok());
+    assert(inactive_region_task.setInitialState({2, 10}).ok());
     sm::TransitionRule inactive_global;
     inactive_global.from = 1;
     inactive_global.target = 2;
@@ -620,7 +620,7 @@ void testContextTasksAndRegionCancel() {
     cancel_state->start_task_on_tick = true;
     cancel_state->cancel_task_on_tick = true;
     addState(cancel_context, 1, 1, std::nullopt, std::move(cancel_state));
-    assert(cancel_context.setInitialState(1, 1).ok());
+    assert(cancel_context.setInitialState({1, 1}).ok());
     assert(cancel_context.start().ok());
     cancel_context.update({0, 64, true});
 }
@@ -631,7 +631,7 @@ void testTransitionVariantsAndFaults() {
     addState(machine, 1, 1, std::nullopt, std::make_unique<RecordingState>("Root", log));
     addState(machine, 2, 1, 1, std::make_unique<RecordingState>("Leaf", log));
     addState(machine, 3, 1, 1, std::make_unique<RecordingState>("Target", log));
-    assert(machine.setInitialState(1, 2).ok());
+    assert(machine.setInitialState({1, 2}).ok());
     sm::TransitionRule parent;
     parent.from = 1;
     parent.target = 3;
@@ -673,8 +673,8 @@ void testTransitionVariantsAndFaults() {
     addState(limit_machine, 2, 1, std::nullopt, std::make_unique<RecordingState>("B", limit_log));
     addState(limit_machine, 10, 2, std::nullopt, std::make_unique<RecordingState>("C", limit_log));
     addState(limit_machine, 11, 2, std::nullopt, std::make_unique<RecordingState>("D", limit_log));
-    assert(limit_machine.setInitialState(1, 1).ok());
-    assert(limit_machine.setInitialState(2, 10).ok());
+    assert(limit_machine.setInitialState({1, 1}).ok());
+    assert(limit_machine.setInitialState({2, 10}).ok());
     sm::TransitionRule a;
     a.from = 1;
     a.target = 2;
@@ -698,8 +698,8 @@ void testTransitionVariantsAndFaults() {
     addState(skip_machine, 1, 1, std::nullopt, std::make_unique<RecordingState>("A", skip_log));
     addState(skip_machine, 2, 1, std::nullopt, std::make_unique<RecordingState>("B", skip_log));
     addState(skip_machine, 10, 2, std::nullopt, std::make_unique<RecordingState>("C", skip_log));
-    assert(skip_machine.setInitialState(1, 1).ok());
-    assert(skip_machine.setInitialState(2, 10).ok());
+    assert(skip_machine.setInitialState({1, 1}).ok());
+    assert(skip_machine.setInitialState({2, 10}).ok());
     sm::TransitionRule skipped_global;
     skipped_global.from = 1;
     skipped_global.target = 2;
@@ -728,7 +728,7 @@ void testTransitionVariantsAndFaults() {
     auto enter_bad = std::make_unique<RecordingState>("EnterBad", enter_status_log);
     enter_bad->enter_status = sm::Status::error(sm::ErrorCode::kFaulted, "enter failed during transition");
     addState(enter_status_machine, 2, 1, std::nullopt, std::move(enter_bad));
-    assert(enter_status_machine.setInitialState(1, 1).ok());
+    assert(enter_status_machine.setInitialState({1, 1}).ok());
     sm::TransitionRule enter_bad_transition;
     enter_bad_transition.from = 1;
     enter_bad_transition.target = 2;
@@ -744,7 +744,7 @@ void testTransitionVariantsAndFaults() {
     bad_event->event_status = sm::Status::error(sm::ErrorCode::kFaulted, "event failed");
     addState(fault_machine, 1, 1, std::nullopt, std::move(bad_event));
     addState(fault_machine, 2, 1, std::nullopt, std::make_unique<RecordingState>("Target", fault_log));
-    assert(fault_machine.setInitialState(1, 1).ok());
+    assert(fault_machine.setInitialState({1, 1}).ok());
     sm::TransitionRule guard_std;
     guard_std.from = 1;
     guard_std.target = 2;
@@ -801,7 +801,7 @@ void testTransitionVariantsAndFaults() {
     auto bad_tick = std::make_unique<RecordingState>("BadTick", fault_log);
     bad_tick->throw_on_tick_unknown = true;
     addState(breaker, 1, 1, std::nullopt, std::move(bad_tick));
-    assert(breaker.setInitialState(1, 1).ok());
+    assert(breaker.setInitialState({1, 1}).ok());
     assert(breaker.start().ok());
     breaker.update({64, 64, true});
     breaker.update({64, 64, true});
@@ -814,7 +814,7 @@ void testCallbackFailures() {
     auto enter = std::make_unique<RecordingState>("EnterThrow", log);
     enter->throw_on_enter_std = true;
     addState(enter_throw, 1, 1, std::nullopt, std::move(enter));
-    assert(enter_throw.setInitialState(1, 1).ok());
+    assert(enter_throw.setInitialState({1, 1}).ok());
     assert(!enter_throw.start().ok());
 
     sm::StateMachine exit_throw("exit_throw");
@@ -822,7 +822,7 @@ void testCallbackFailures() {
     exit_state->throw_on_exit_unknown = true;
     addState(exit_throw, 1, 1, std::nullopt, std::move(exit_state));
     addState(exit_throw, 2, 1, std::nullopt, std::make_unique<RecordingState>("B", log));
-    assert(exit_throw.setInitialState(1, 1).ok());
+    assert(exit_throw.setInitialState({1, 1}).ok());
     sm::TransitionRule to_b;
     to_b.from = 1;
     to_b.target = 2;
@@ -836,7 +836,7 @@ void testCallbackFailures() {
     auto event_state = std::make_unique<RecordingState>("EventThrow", log);
     event_state->throw_on_event_std = true;
     addState(event_throw, 1, 1, std::nullopt, std::move(event_state));
-    assert(event_throw.setInitialState(1, 1).ok());
+    assert(event_throw.setInitialState({1, 1}).ok());
     assert(event_throw.start().ok());
     event_throw.postEvent(sm::Event(9));
     assert(event_throw.update({64, 64, false}).value.faults_recorded == 1);
@@ -847,8 +847,8 @@ void testCallbackFailures() {
     addState(global_exit_fault, 1, 1, std::nullopt, std::make_unique<RecordingState>("Main", log));
     addState(global_exit_fault, 2, 1, std::nullopt, std::make_unique<RecordingState>("Safe", log));
     addState(global_exit_fault, 10, 2, std::nullopt, std::move(other_exit_bad));
-    assert(global_exit_fault.setInitialState(1, 1).ok());
-    assert(global_exit_fault.setInitialState(2, 10).ok());
+    assert(global_exit_fault.setInitialState({1, 1}).ok());
+    assert(global_exit_fault.setInitialState({2, 10}).ok());
     sm::TransitionRule global;
     global.from = 1;
     global.target = 2;
@@ -864,7 +864,7 @@ void testCallbackFailures() {
     auto stop_bad = std::make_unique<RecordingState>("StopExitBad", log);
     stop_bad->exit_status = sm::Status::error(sm::ErrorCode::kFaulted, "stop exit failed");
     addState(stop_exit_fault, 1, 1, std::nullopt, std::move(stop_bad));
-    assert(stop_exit_fault.setInitialState(1, 1).ok());
+    assert(stop_exit_fault.setInitialState({1, 1}).ok());
     assert(stop_exit_fault.start().ok());
     assert(stop_exit_fault.stop().ok());
     assert(stop_exit_fault.update({64, 64, false}).value.faults_recorded == 1);
@@ -876,7 +876,7 @@ void testEventQueueCapacitySmoke() {
     options.max_pending_events = 2;
     sm::StateMachine machine("capacity_smoke", options);
     addState(machine, 1, sm::kDefaultRegion, std::nullopt, std::make_unique<RecordingState>("A", log));
-    assert(machine.setInitialState(sm::kDefaultRegion, 1).ok());
+    assert(machine.setInitialState({sm::kDefaultRegion, 1}).ok());
     assert(machine.start().ok());
 
     assert(machine.postEvent(sm::Event(10)).ok());
@@ -899,7 +899,7 @@ void testConcurrentPostSmoke() {
     options.max_pending_events = 512;
     sm::StateMachine machine("concurrent_post_smoke", options);
     addState(machine, 1, sm::kDefaultRegion, std::nullopt, std::make_unique<RecordingState>("A", log));
-    assert(machine.setInitialState(sm::kDefaultRegion, 1).ok());
+    assert(machine.setInitialState({sm::kDefaultRegion, 1}).ok());
     assert(machine.start().ok());
 
     constexpr int kThreads = 8;
@@ -944,7 +944,7 @@ void testFaultEventBypassesPendingCapacitySmoke() {
     to_fault.target = 2;
     to_fault.event = sm::kFaultEvent;
     assert(machine.addTransition(to_fault).ok());
-    assert(machine.setInitialState(sm::kDefaultRegion, 1).ok());
+    assert(machine.setInitialState({sm::kDefaultRegion, 1}).ok());
     assert(machine.start().ok());
     assert(machine.postEvent(sm::Event(42)).ok());
 
@@ -968,7 +968,7 @@ void testFaultFuseRejectsEventsSmoke() {
     auto faulting = std::make_unique<RecordingState>("Faulting", log);
     faulting->tick_status = sm::Status::error(sm::ErrorCode::kFaulted, "tick fault");
     addState(machine, 1, sm::kDefaultRegion, std::nullopt, std::move(faulting));
-    assert(machine.setInitialState(sm::kDefaultRegion, 1).ok());
+    assert(machine.setInitialState({sm::kDefaultRegion, 1}).ok());
     assert(machine.start().ok());
 
     auto first_fault = machine.update({64, 64, true});
@@ -994,7 +994,7 @@ void testTickGeneratedEventTwoStageUpdateSmoke() {
     state->post_on_tick = 7;
     addState(machine, 1, sm::kDefaultRegion, std::nullopt, std::move(state));
     addState(machine, 2, sm::kDefaultRegion, std::nullopt, std::make_unique<RecordingState>("B", log));
-    assert(machine.setInitialState(sm::kDefaultRegion, 1).ok());
+    assert(machine.setInitialState({sm::kDefaultRegion, 1}).ok());
     sm::TransitionRule to_b;
     to_b.from = 1;
     to_b.target = 2;

@@ -2,7 +2,6 @@ Checks: >
   -*,
   clang-analyzer-*,
   bugprone-*,
-  -bugprone-easily-swappable-parameters,
   performance-*,
   -performance-enum-size,
   portability-*,
