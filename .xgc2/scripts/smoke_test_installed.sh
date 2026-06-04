@@ -56,7 +56,7 @@ int main()
   if (!machine.addState({1}, std::move(ready)).ok()) {
     return 1;
   }
-  if (!machine.setInitialState(state_machine::kDefaultRegion, 1).ok()) {
+  if (!machine.setInitialState({state_machine::kDefaultRegion, 1}).ok()) {
     return 1;
   }
   if (!machine.start().ok()) {
