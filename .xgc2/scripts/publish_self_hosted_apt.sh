@@ -33,6 +33,20 @@ if ! compgen -G "${DEB_DIR}/*.deb" >/dev/null; then
   exit 1
 fi
 
+for deb in "${DEB_DIR}"/*.deb; do
+  deb_arch="$(dpkg-deb -f "${deb}" Architecture)"
+  deb_version="$(dpkg-deb -f "${deb}" Version)"
+  if [[ "${deb_arch}" != "all" ]]; then
+    case "${deb_version}" in
+      *"~${APT_REPO_DISTRIBUTION}"*|*"+"${APT_REPO_DISTRIBUTION}*) ;;
+      *)
+        echo "refusing to publish ${deb}: non-all package version '${deb_version}' lacks '${APT_REPO_DISTRIBUTION}' suffix" >&2
+        exit 1
+        ;;
+    esac
+  fi
+done
+
 tmp_dir="$(mktemp -d)"
 cleanup() {
   rm -rf "${tmp_dir}"
