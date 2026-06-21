@@ -212,8 +212,11 @@ struct StateMachine::Impl {
         if (region_it == regions.end()) {
             return 0;
         }
-        while (region_it->second.config.owner_state) {
-            const auto owner_state = *region_it->second.config.owner_state;
+        while (true) {
+            const auto owner_state = region_it->second.config.owner_state.value_or(0);
+            if (owner_state == 0) {
+                break;
+            }
             const auto state_it = states.find(owner_state);
             if (state_it == states.end()) {
                 return 0;
@@ -542,7 +545,7 @@ struct StateMachine::Builder::Impl {
     std::vector<TransitionRule> transitions;
     std::vector<Scope> scopes;
     std::unordered_map<StateId, RegionId> implicit_region_by_state;
-    std::optional<TransitionRule> pending_transition;
+    std::unique_ptr<TransitionRule> pending_transition;
     RegionId next_implicit_region{kImplicitRegionBase};
     uint64_t next_region_registration_order{1};
     uint64_t next_state_registration_order{1};
@@ -561,6 +564,13 @@ struct StateMachine::Builder::Impl {
         pending_transition->registration_order = next_transition_registration_order++;
         transitions.push_back(std::move(*pending_transition));
         pending_transition.reset();
+    }
+
+    TransitionRule& ensurePendingTransition() {
+        if (!pending_transition) {
+            pending_transition = std::make_unique<TransitionRule>();
+        }
+        return *pending_transition;
     }
 
     void closeLeafStates() {
@@ -818,79 +828,52 @@ StateMachine::Builder& StateMachine::Builder::endRegion() {
 
 StateMachine::Builder& StateMachine::Builder::transition() {
     impl_->finalizeTransition();
-    impl_->pending_transition = TransitionRule{};
+    impl_->pending_transition = std::make_unique<TransitionRule>();
     return *this;
 }
 
 StateMachine::Builder& StateMachine::Builder::from(StateId state) {
-    if (!impl_->pending_transition) {
-        impl_->pending_transition = TransitionRule{};
-    }
-    impl_->pending_transition->from = state;
+    impl_->ensurePendingTransition().from = state;
     return *this;
 }
 
 StateMachine::Builder& StateMachine::Builder::to(StateId state) {
-    if (!impl_->pending_transition) {
-        impl_->pending_transition = TransitionRule{};
-    }
-    impl_->pending_transition->target = state;
+    impl_->ensurePendingTransition().target = state;
     return *this;
 }
 
 StateMachine::Builder& StateMachine::Builder::on(EventId event) {
-    if (!impl_->pending_transition) {
-        impl_->pending_transition = TransitionRule{};
-    }
-    impl_->pending_transition->event = event;
+    impl_->ensurePendingTransition().event = event;
     return *this;
 }
 
 StateMachine::Builder& StateMachine::Builder::when(std::function<bool(const GuardContext&)> guard) {
-    if (!impl_->pending_transition) {
-        impl_->pending_transition = TransitionRule{};
-    }
-    impl_->pending_transition->guard = std::move(guard);
+    impl_->ensurePendingTransition().guard = std::move(guard);
     return *this;
 }
 
 StateMachine::Builder& StateMachine::Builder::priority(int priority) {
-    if (!impl_->pending_transition) {
-        impl_->pending_transition = TransitionRule{};
-    }
-    impl_->pending_transition->priority = priority;
+    impl_->ensurePendingTransition().priority = priority;
     return *this;
 }
 
 StateMachine::Builder& StateMachine::Builder::evaluationOrder(int evaluation_order) {
-    if (!impl_->pending_transition) {
-        impl_->pending_transition = TransitionRule{};
-    }
-    impl_->pending_transition->evaluation_order = evaluation_order;
+    impl_->ensurePendingTransition().evaluation_order = evaluation_order;
     return *this;
 }
 
 StateMachine::Builder& StateMachine::Builder::type(TransitionType type) {
-    if (!impl_->pending_transition) {
-        impl_->pending_transition = TransitionRule{};
-    }
-    impl_->pending_transition->type = type;
+    impl_->ensurePendingTransition().type = type;
     return *this;
 }
 
 StateMachine::Builder& StateMachine::Builder::global(bool enabled) {
-    if (!impl_->pending_transition) {
-        impl_->pending_transition = TransitionRule{};
-    }
-    impl_->pending_transition->global = enabled;
+    impl_->ensurePendingTransition().global = enabled;
     return *this;
 }
 
 StateMachine::Builder& StateMachine::Builder::action(std::function<ActionResult(StateContext&)> action) {
-    if (!impl_->pending_transition) {
-        impl_->pending_transition = TransitionRule{};
-    }
-    impl_->pending_transition->action = std::move(action);
+    impl_->ensurePendingTransition().action = std::move(action);
     return *this;
 }
 
