@@ -203,15 +203,15 @@ class StateMachine;
 
 class GuardContext {
   public:
-    GuardContext(const StateMachine& machine, const Event& event);
+    GuardContext(const StateMachine& machine, const Event* event);
     TimePoint now() const;
     Duration elapsed(StateId state) const;
     MachineSnapshot snapshot() const;
-    const Event& event() const { return event_; }
+    const Event* event() const { return event_; }
 
   private:
     const StateMachine& machine_;
-    const Event& event_;
+    const Event* event_{nullptr};
 };
 
 class StateContext {
@@ -260,7 +260,7 @@ struct TransitionRule {
     TransitionId id{0};
     StateId from{0};
     std::optional<StateId> target;
-    EventId event{0};
+    std::optional<EventId> event;
     RegionId region{0};
     int priority{0};
     int evaluation_order{0};
@@ -282,20 +282,57 @@ struct RegionConfig {
     std::string name;
     StateId initial_state{0};
     int execution_order{0};
+    std::optional<StateId> owner_state;
 };
 
 class StateMachine {
   public:
-    explicit StateMachine(std::string name, RuntimeOptions options = {},
+    class Builder {
+      public:
+        explicit Builder(std::string name, const RuntimeOptions& options = {},
+                         std::shared_ptr<Clock> clock = std::make_shared<SteadyClock>());
+        Builder(Builder&&) noexcept;
+        Builder& operator=(Builder&&) noexcept;
+        Builder(const Builder&) = delete;
+        Builder& operator=(const Builder&) = delete;
+        ~Builder();
+
+        Builder& region(RegionId id);
+        Builder& name(std::string name);
+        Builder& order(int execution_order);
+        Builder& initial(StateId state);
+        Builder& state(StateId id);
+        Builder& impl(std::unique_ptr<State> state);
+        Builder& endState();
+        Builder& endRegion();
+
+        Builder& transition();
+        Builder& from(StateId state);
+        Builder& to(StateId state);
+        Builder& on(EventId event);
+        Builder& when(std::function<bool(const GuardContext&)> guard);
+        Builder& priority(int priority);
+        Builder& evaluationOrder(int evaluation_order);
+        Builder& type(TransitionType type);
+        Builder& global(bool enabled = true);
+        Builder& action(std::function<ActionResult(StateContext&)> action);
+
+        Result<std::unique_ptr<StateMachine>> build();
+
+      private:
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+    };
+
+    static Builder builder(std::string name, const RuntimeOptions& options = {},
+                           std::shared_ptr<Clock> clock = std::make_shared<SteadyClock>());
+
+    explicit StateMachine(std::string name, const RuntimeOptions& options = {},
                           std::shared_ptr<Clock> clock = std::make_shared<SteadyClock>());
     ~StateMachine();
     StateMachine(const StateMachine&) = delete;
     StateMachine& operator=(const StateMachine&) = delete;
     Status bindOwnerThread();
-    Status addRegion(RegionConfig config);
-    Status addState(StateConfig config, std::unique_ptr<State> state);
-    Status addTransition(TransitionRule rule);
-    Status setInitialState(StateSelection selection);
     Status start();
     Status stop();
     Result<UpdateResult> update(UpdateOptions options = {});
@@ -309,6 +346,7 @@ class StateMachine {
     std::vector<Event> currentOutputEvents() const;
     MachineLifecycle lifecycle() const;
     StateId currentState(RegionId region = kDefaultRegion) const;
+    std::vector<StateId> currentStatePath(RegionId region = kDefaultRegion) const;
     std::string currentStateName(RegionId region = kDefaultRegion) const;
     Duration elapsed(StateId state) const;
     TimePoint now() const;
@@ -317,9 +355,13 @@ class StateMachine {
     size_t generatedEventCount() const;
 
   private:
+    friend class Builder;
     friend class GuardContext;
     friend class StateContext;
     struct Impl;
+    Status addRegion(RegionConfig config);
+    Status addState(StateConfig config, std::unique_ptr<State> state);
+    Status addTransition(TransitionRule rule);
     std::unique_ptr<Impl> impl_;
     std::string name_;
 };

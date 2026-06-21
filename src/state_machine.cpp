@@ -7,10 +7,13 @@
 #include <mutex>
 #include <set>
 #include <sstream>
+#include <typeinfo>
 #include <unordered_map>
 
 namespace state_machine {
 namespace {
+
+constexpr RegionId kImplicitRegionBase = 0x80000000u;
 
 template <typename T> void pushBounded(std::deque<T>& buffer, const T& value, size_t capacity) {
     const size_t normalized = std::max<size_t>(capacity, 1);
@@ -27,6 +30,15 @@ std::string exceptionMessage(const std::exception& ex) {
 std::string exceptionMessage(...) {
     return "unknown exception";
 }
+
+class PassiveState final : public State {
+  public:
+    explicit PassiveState(std::string name) : name_(std::move(name)) {}
+    std::string name() const override { return name_; }
+
+  private:
+    std::string name_;
+};
 
 } // namespace
 
@@ -116,6 +128,7 @@ struct StateMachine::Impl {
     size_t current_region_index{0};
     std::deque<EventLogRecord> event_log;
     std::deque<FaultRecord> fault_log;
+    StateMachine* machine{nullptr};
 
     explicit Impl(const RuntimeOptions& runtime_options, std::shared_ptr<Clock> runtime_clock)
         : options(runtime_options), clock(std::move(runtime_clock)) {
@@ -165,6 +178,269 @@ struct StateMachine::Impl {
             }
             return lhs_region.registration_order < rhs_region.registration_order;
         });
+    }
+
+    std::vector<RegionId> topLevelRegions() const {
+        std::vector<RegionId> ids;
+        for (RegionId id : region_order) {
+            const auto it = regions.find(id);
+            if (it != regions.end() && !it->second.config.owner_state) {
+                ids.push_back(id);
+            }
+        }
+        return ids;
+    }
+
+    std::vector<RegionId> childRegions(StateId state) const {
+        std::vector<RegionId> ids;
+        for (RegionId id : region_order) {
+            const auto it = regions.find(id);
+            if (it != regions.end() && it->second.config.owner_state == state) {
+                ids.push_back(id);
+            }
+        }
+        return ids;
+    }
+
+    RegionId stateRegion(StateId state) const {
+        const auto it = states.find(state);
+        return it == states.end() ? 0 : it->second.config.region;
+    }
+
+    RegionId topLevelRegionOfRegion(RegionId region) const {
+        auto region_it = regions.find(region);
+        if (region_it == regions.end()) {
+            return 0;
+        }
+        while (region_it->second.config.owner_state) {
+            const auto owner_state = *region_it->second.config.owner_state;
+            const auto state_it = states.find(owner_state);
+            if (state_it == states.end()) {
+                return 0;
+            }
+            region_it = regions.find(state_it->second.config.region);
+            if (region_it == regions.end()) {
+                return 0;
+            }
+        }
+        return region_it->first;
+    }
+
+    RegionId topLevelRegionOfState(StateId state) const { return topLevelRegionOfRegion(stateRegion(state)); }
+
+    std::vector<StateId> pathToRoot(StateId state) const {
+        std::vector<StateId> path;
+        StateId current = state;
+        std::set<StateId> seen;
+        while (current != 0 && seen.insert(current).second) {
+            const auto state_it = states.find(current);
+            if (state_it == states.end()) {
+                break;
+            }
+            path.push_back(current);
+            current = state_it->second.config.parent.value_or(0);
+        }
+        std::reverse(path.begin(), path.end());
+        return path;
+    }
+
+    void collectActiveStatesInRegion(RegionId region, std::vector<StateId>& out) const {
+        const auto region_it = regions.find(region);
+        if (region_it == regions.end() || region_it->second.active_leaf == 0) {
+            return;
+        }
+        const StateId active = region_it->second.active_leaf;
+        out.push_back(active);
+        for (RegionId child_region : childRegions(active)) {
+            collectActiveStatesInRegion(child_region, out);
+        }
+    }
+
+    std::vector<StateId> activeStatesInRegion(RegionId region) const {
+        std::vector<StateId> active;
+        collectActiveStatesInRegion(region, active);
+        return active;
+    }
+
+    bool activeInPath(StateSelection selection) const {
+        const auto active = activeStatesInRegion(selection.region);
+        return std::find(active.begin(), active.end(), selection.state) != active.end();
+    }
+
+    size_t commonPrefix(const std::vector<StateId>& lhs, const std::vector<StateId>& rhs) const {
+        size_t prefix = 0;
+        while (prefix < lhs.size() && prefix < rhs.size() && lhs[prefix] == rhs[prefix]) {
+            ++prefix;
+        }
+        return prefix;
+    }
+
+    void cancelTasksForStateExit(StateId state) {
+        for (auto& entry : tasks) {
+            auto& task = entry.second;
+            if (!task.active) {
+                continue;
+            }
+            if (task.handle.owner_state == state && task.policy == TaskCancelPolicy::kCancelOnStateExit) {
+                task.active = false;
+                task.cancel_requested = true;
+                EventLogRecord record;
+                record.kind = EventLogRecord::Kind::kTaskCancelled;
+                record.from_state = state;
+                record.message = "cancelled on state exit";
+                log(record);
+            }
+        }
+    }
+
+    void cancelTasksForRegionExit(RegionId region) {
+        for (auto& entry : tasks) {
+            auto& task = entry.second;
+            if (!task.active) {
+                continue;
+            }
+            if (task.handle.owner_region == region && task.policy == TaskCancelPolicy::kCancelOnRegionExit) {
+                task.active = false;
+                task.cancel_requested = true;
+                EventLogRecord record;
+                record.kind = EventLogRecord::Kind::kTaskCancelled;
+                record.region = region;
+                record.message = "cancelled on region exit";
+                log(record);
+            }
+        }
+    }
+
+    void cancelTasksForMachineStop() {
+        for (auto& entry : tasks) {
+            auto& task = entry.second;
+            if (task.active && task.policy == TaskCancelPolicy::kCancelOnMachineStop) {
+                task.active = false;
+                task.cancel_requested = true;
+                EventLogRecord record;
+                record.kind = EventLogRecord::Kind::kTaskCancelled;
+                record.region = task.handle.owner_region;
+                record.from_state = task.handle.owner_state;
+                record.message = "cancelled on machine stop";
+                log(record);
+            }
+        }
+    }
+
+    Status callStateCallback(StateId state, CallbackKind kind, const Event* event,
+                             const std::function<ActionResult(State&, StateContext&)>& call) {
+        auto it = states.find(state);
+        if (it == states.end() || !it->second.state) {
+            return Status::error(ErrorCode::kNotFound, "state callback target not found");
+        }
+        StateContext ctx(*machine, StateContext::Config{{it->second.config.region, state}, event, generated_events});
+        try {
+            auto status = call(*it->second.state, ctx);
+            if (!status.ok()) {
+                recordFault(faultInput(event, state, std::nullopt, kind, status.message));
+                return status;
+            }
+            return Status{};
+        } catch (const std::exception& ex) {
+            const auto message = exceptionMessage(ex);
+            recordFault(faultInput(event, state, std::nullopt, kind, message, typeid(ex).name()));
+            return Status::error(ErrorCode::kFaulted, message);
+        } catch (...) {
+            const auto message = exceptionMessage();
+            recordFault(faultInput(event, state, std::nullopt, kind, message));
+            return Status::error(ErrorCode::kFaulted, message);
+        }
+    }
+
+    Status enterState(StateId state, const Event* event, bool expand_defaults) {
+        auto state_it = states.find(state);
+        if (state_it == states.end()) {
+            return Status::error(ErrorCode::kNotFound, "state not found");
+        }
+        auto region_it = regions.find(state_it->second.config.region);
+        if (region_it == regions.end()) {
+            return Status::error(ErrorCode::kNotFound, "state region not found");
+        }
+        region_it->second.active_leaf = state;
+        state_it->second.active = true;
+        state_it->second.entered_at = now();
+        auto status =
+            callStateCallback(state, CallbackKind::kOnEnter, event, [](State& active_state, StateContext& ctx) {
+                return active_state.onEnter(ctx);
+            });
+        if (!status.ok()) {
+            return status;
+        }
+        if (expand_defaults) {
+            for (RegionId child_region : childRegions(state)) {
+                auto child_it = regions.find(child_region);
+                if (child_it == regions.end() || child_it->second.config.initial_state == 0) {
+                    return Status::error(ErrorCode::kInvalidArgument, "child region needs an initial state");
+                }
+                status = enterState(child_it->second.config.initial_state, event, true);
+                if (!status.ok()) {
+                    return status;
+                }
+            }
+        }
+        return Status{};
+    }
+
+    Status exitState(StateId state, const Event* event) {
+        for (auto child_regions = childRegions(state); !child_regions.empty();) {
+            const RegionId child_region = child_regions.back();
+            child_regions.pop_back();
+            const auto region_it = regions.find(child_region);
+            if (region_it != regions.end() && region_it->second.active_leaf != 0) {
+                auto status = exitState(region_it->second.active_leaf, event);
+                if (!status.ok()) {
+                    return status;
+                }
+                cancelTasksForRegionExit(child_region);
+                region_it->second.active_leaf = 0;
+            }
+        }
+
+        auto state_it = states.find(state);
+        if (state_it == states.end()) {
+            return Status::error(ErrorCode::kNotFound, "state not found");
+        }
+        cancelTasksForStateExit(state);
+        auto status =
+            callStateCallback(state, CallbackKind::kOnExit, event, [](State& active_state, StateContext& ctx) {
+                return active_state.onExit(ctx);
+            });
+        state_it->second.active = false;
+        auto region_it = regions.find(state_it->second.config.region);
+        if (region_it != regions.end() && region_it->second.active_leaf == state) {
+            region_it->second.active_leaf = 0;
+        }
+        return status;
+    }
+
+    Status exitRegion(RegionId region, const Event* event) {
+        const auto region_it = regions.find(region);
+        if (region_it == regions.end() || region_it->second.active_leaf == 0) {
+            return Status{};
+        }
+        auto status = exitState(region_it->second.active_leaf, event);
+        cancelTasksForRegionExit(region);
+        if (!status.ok()) {
+            return status;
+        }
+        region_it->second.active_leaf = 0;
+        return Status{};
+    }
+
+    Status enterRegionDefault(RegionId region, const Event* event) {
+        const auto region_it = regions.find(region);
+        if (region_it == regions.end()) {
+            return Status::error(ErrorCode::kNotFound, "region not found");
+        }
+        if (region_it->second.config.initial_state == 0) {
+            return Status::error(ErrorCode::kInvalidArgument, "region needs an initial state");
+        }
+        return enterState(region_it->second.config.initial_state, event, true);
     }
 
     Status enqueueEvent(Event event, bool bypass_capacity = false) {
@@ -233,129 +509,474 @@ struct StateMachine::Impl {
         log(log_record);
         return fault;
     }
-
-    std::vector<StateId> pathToRoot(StateId leaf) const {
-        std::vector<StateId> path;
-        StateId current = leaf;
-        std::set<StateId> seen;
-        while (current != 0 && seen.insert(current).second) {
-            const auto it = states.find(current);
-            if (it == states.end()) {
-                break; // LCOV_EXCL_LINE: public configuration rejects active leaves without a state entry.
-            }
-            path.push_back(current);
-            current = it->second.config.parent.value_or(0);
-        }
-        std::reverse(path.begin(), path.end());
-        return path;
-    }
-
-    bool activeInPath(StateSelection selection) const {
-        const auto region_it = regions.find(selection.region);
-        if (region_it == regions.end()) {
-            return false;
-        }
-        const auto path = pathToRoot(region_it->second.active_leaf);
-        return std::find(path.begin(), path.end(), selection.state) != path.end();
-    }
-
-    RegionId stateRegion(StateId state) const {
-        const auto it = states.find(state);
-        return it == states.end() ? 0 : it->second.config.region;
-    }
-
-    size_t commonPrefix(const std::vector<StateId>& lhs, const std::vector<StateId>& rhs) const {
-        size_t prefix = 0;
-        while (prefix < lhs.size() && prefix < rhs.size() && lhs[prefix] == rhs[prefix]) {
-            ++prefix;
-        }
-        return prefix;
-    }
-
-    void cancelTasksForStateExit(StateId state) {
-        for (auto& entry : tasks) {
-            auto& task = entry.second;
-            if (!task.active) {
-                continue;
-            }
-            if (task.handle.owner_state == state && task.policy == TaskCancelPolicy::kCancelOnStateExit) {
-                task.active = false;
-                task.cancel_requested = true;
-                EventLogRecord record;
-                record.kind = EventLogRecord::Kind::kTaskCancelled;
-                record.from_state = state;
-                record.message = "cancelled on state exit";
-                log(record);
-            }
-        }
-    }
-
-    void cancelTasksForRegionExit(RegionId region) {
-        for (auto& entry : tasks) {
-            auto& task = entry.second;
-            if (!task.active) {
-                continue;
-            }
-            if (task.handle.owner_region == region && task.policy == TaskCancelPolicy::kCancelOnRegionExit) {
-                task.active = false;
-                task.cancel_requested = true;
-                EventLogRecord record;
-                record.kind = EventLogRecord::Kind::kTaskCancelled;
-                record.region = region;
-                record.message = "cancelled on region exit";
-                log(record);
-            }
-        }
-    }
-
-    void cancelTasksForMachineStop() {
-        for (auto& entry : tasks) {
-            auto& task = entry.second;
-            if (task.active && task.policy == TaskCancelPolicy::kCancelOnMachineStop) {
-                task.active = false;
-                task.cancel_requested = true;
-                EventLogRecord record;
-                record.kind = EventLogRecord::Kind::kTaskCancelled;
-                record.region = task.handle.owner_region;
-                record.from_state = task.handle.owner_state;
-                record.message = "cancelled on machine stop";
-                log(record);
-            }
-        }
-    }
-
-    Status callStateCallback(StateId state, RegionId region, CallbackKind kind, const Event* event,
-                             const std::function<ActionResult(State&, StateContext&)>& call) {
-        auto it = states.find(state);
-        if (it == states.end() || !it->second.state) {
-            return Status::error(
-                ErrorCode::kNotFound,
-                "state callback target not found"); // LCOV_EXCL_LINE: guarded by state graph validation.
-        }
-        StateContext ctx(*machine, StateContext::Config{{region, state}, event, generated_events});
-        try {
-            auto status = call(*it->second.state, ctx);
-            if (!status.ok()) {
-                recordFault(faultInput(event, state, std::nullopt, kind, status.message));
-                return status;
-            }
-            return Status{};
-        } catch (const std::exception& ex) {
-            const auto message = exceptionMessage(ex);
-            recordFault(faultInput(event, state, std::nullopt, kind, message, typeid(ex).name()));
-            return Status::error(ErrorCode::kFaulted, message);
-        } catch (...) {
-            const auto message = exceptionMessage();
-            recordFault(faultInput(event, state, std::nullopt, kind, message));
-            return Status::error(ErrorCode::kFaulted, message);
-        }
-    }
-
-    StateMachine* machine{nullptr};
 };
 
-// cppcheck-suppress passedByValue ; keep public constructor ABI stable and copy into the pimpl.
-StateMachine::StateMachine(std::string name, RuntimeOptions options, std::shared_ptr<Clock> clock)
+struct StateMachine::Builder::Impl {
+    enum class ScopeKind { kRegion, kState };
+    struct Scope {
+        ScopeKind kind{ScopeKind::kRegion};
+        RegionId region{0};
+        StateId state{0};
+        bool child_region_open{false};
+    };
+
+    struct RegionDef {
+        RegionConfig config;
+        uint64_t registration_order{0};
+    };
+
+    struct StateDef {
+        StateConfig config;
+        std::unique_ptr<State> state;
+        std::string name;
+        uint64_t registration_order{0};
+    };
+
+    std::string machine_name;
+    RuntimeOptions options;
+    std::shared_ptr<Clock> clock;
+    std::unordered_map<RegionId, RegionDef> regions;
+    std::vector<RegionId> region_order;
+    std::unordered_map<StateId, StateDef> states;
+    std::vector<StateId> state_order;
+    std::vector<TransitionRule> transitions;
+    std::vector<Scope> scopes;
+    std::unordered_map<StateId, RegionId> implicit_region_by_state;
+    std::optional<TransitionRule> pending_transition;
+    RegionId next_implicit_region{kImplicitRegionBase};
+    uint64_t next_region_registration_order{1};
+    uint64_t next_state_registration_order{1};
+    uint64_t next_transition_registration_order{1};
+    std::vector<std::string> errors;
+
+    Impl(std::string name, const RuntimeOptions& runtime_options, std::shared_ptr<Clock> runtime_clock)
+        : machine_name(std::move(name)), options(runtime_options), clock(std::move(runtime_clock)) {}
+
+    void error(std::string message) { errors.push_back(std::move(message)); }
+
+    void finalizeTransition() {
+        if (!pending_transition) {
+            return;
+        }
+        pending_transition->registration_order = next_transition_registration_order++;
+        transitions.push_back(std::move(*pending_transition));
+        pending_transition.reset();
+    }
+
+    void closeLeafStates() {
+        while (!scopes.empty() && scopes.back().kind == ScopeKind::kState && !scopes.back().child_region_open) {
+            scopes.pop_back();
+        }
+    }
+
+    RegionId allocateRegionId() {
+        while (regions.count(next_implicit_region) > 0) {
+            ++next_implicit_region;
+        }
+        return next_implicit_region++;
+    }
+
+    RegionId ensureImplicitRegion(StateId owner_state) {
+        const auto existing = implicit_region_by_state.find(owner_state);
+        if (existing != implicit_region_by_state.end()) {
+            return existing->second;
+        }
+        const RegionId region_id = allocateRegionId();
+        RegionConfig config;
+        config.id = region_id;
+        config.name = "state_" + std::to_string(owner_state) + "_children";
+        config.owner_state = owner_state;
+        regions.emplace(region_id, RegionDef{config, next_region_registration_order++});
+        region_order.push_back(region_id);
+        implicit_region_by_state[owner_state] = region_id;
+        if (!scopes.empty() && scopes.back().kind == ScopeKind::kState && scopes.back().state == owner_state) {
+            scopes.back().child_region_open = true;
+        }
+        return region_id;
+    }
+
+    RegionId currentContainerRegion() {
+        if (scopes.empty()) {
+            error("state() requires a region()");
+            return 0;
+        }
+        closeLeafStates();
+        if (scopes.empty()) {
+            error("state() requires a region()");
+            return 0;
+        }
+        const auto& scope = scopes.back();
+        if (scope.kind == ScopeKind::kRegion) {
+            return scope.region;
+        }
+        return ensureImplicitRegion(scope.state);
+    }
+
+    StateId currentState() const {
+        for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
+            if (it->kind == ScopeKind::kState) {
+                return it->state;
+            }
+        }
+        return 0;
+    }
+
+    RegionId currentRegion() const {
+        for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
+            if (it->kind == ScopeKind::kRegion) {
+                return it->region;
+            }
+        }
+        return 0;
+    }
+
+    std::optional<StateId> ownerOfRegion(RegionId region) const {
+        const auto it = regions.find(region);
+        if (it == regions.end()) {
+            return std::nullopt;
+        }
+        return it->second.config.owner_state;
+    }
+
+    std::string firstError() const {
+        if (errors.empty()) {
+            return {};
+        }
+        std::ostringstream stream;
+        for (size_t i = 0; i < errors.size(); ++i) {
+            if (i != 0) {
+                stream << "; ";
+            }
+            stream << errors[i];
+        }
+        return stream.str();
+    }
+};
+
+StateMachine::Builder::Builder(std::string name, const RuntimeOptions& options, std::shared_ptr<Clock> clock)
+    : impl_(std::make_unique<Impl>(std::move(name), options, std::move(clock))) {}
+
+StateMachine::Builder::Builder(Builder&&) noexcept = default;
+StateMachine::Builder& StateMachine::Builder::operator=(Builder&&) noexcept = default;
+StateMachine::Builder::~Builder() = default;
+
+StateMachine::Builder& StateMachine::Builder::region(RegionId id) {
+    impl_->finalizeTransition();
+    if (id == 0) {
+        impl_->error("region id must be non-zero");
+        return *this;
+    }
+    const StateId owner = impl_->currentState();
+    if (impl_->regions.count(id) > 0) {
+        impl_->error("duplicate region id " + std::to_string(id));
+        return *this;
+    }
+    RegionConfig config;
+    config.id = id;
+    config.name = "region_" + std::to_string(id);
+    if (owner != 0) {
+        config.owner_state = owner;
+        if (!impl_->scopes.empty() && impl_->scopes.back().kind == Impl::ScopeKind::kState) {
+            impl_->scopes.back().child_region_open = true;
+        }
+    }
+    impl_->regions.emplace(id, Impl::RegionDef{config, impl_->next_region_registration_order++});
+    impl_->region_order.push_back(id);
+    impl_->scopes.push_back(Impl::Scope{Impl::ScopeKind::kRegion, id, 0, false});
+    return *this;
+}
+
+StateMachine::Builder& StateMachine::Builder::name(std::string name) {
+    impl_->finalizeTransition();
+    if (impl_->scopes.empty()) {
+        impl_->machine_name = std::move(name);
+        return *this;
+    }
+    const auto& scope = impl_->scopes.back();
+    if (scope.kind == Impl::ScopeKind::kRegion) {
+        impl_->regions[scope.region].config.name = std::move(name);
+    } else {
+        impl_->states[scope.state].name = std::move(name);
+    }
+    return *this;
+}
+
+StateMachine::Builder& StateMachine::Builder::order(int execution_order) {
+    if (impl_->pending_transition) {
+        impl_->pending_transition->evaluation_order = execution_order;
+        return *this;
+    }
+    if (impl_->scopes.empty() || impl_->scopes.back().kind != Impl::ScopeKind::kRegion) {
+        impl_->error("order() applies to the current region or transition");
+        return *this;
+    }
+    impl_->regions[impl_->scopes.back().region].config.execution_order = execution_order;
+    return *this;
+}
+
+StateMachine::Builder& StateMachine::Builder::initial(StateId state) {
+    impl_->finalizeTransition();
+    if (state == 0) {
+        impl_->error("initial state id must be non-zero");
+        return *this;
+    }
+    if (impl_->scopes.empty()) {
+        impl_->error("initial() requires a region or state scope");
+        return *this;
+    }
+    auto& scope = impl_->scopes.back();
+    RegionId region_id = 0;
+    if (scope.kind == Impl::ScopeKind::kRegion) {
+        region_id = scope.region;
+    } else {
+        region_id = impl_->ensureImplicitRegion(scope.state);
+        scope.child_region_open = true;
+    }
+    impl_->regions[region_id].config.initial_state = state;
+    return *this;
+}
+
+StateMachine::Builder& StateMachine::Builder::state(StateId id) {
+    impl_->finalizeTransition();
+    if (id == 0) {
+        impl_->error("state id must be non-zero");
+        return *this;
+    }
+    const RegionId region_id = impl_->currentContainerRegion();
+    if (region_id == 0) {
+        return *this;
+    }
+    if (impl_->states.count(id) > 0) {
+        impl_->error("duplicate state id " + std::to_string(id));
+        return *this;
+    }
+    StateConfig config;
+    config.id = id;
+    config.region = region_id;
+    config.parent = impl_->ownerOfRegion(region_id);
+    impl_->states.emplace(
+        id, Impl::StateDef{config, nullptr, "state_" + std::to_string(id), impl_->next_state_registration_order++});
+    impl_->state_order.push_back(id);
+    impl_->scopes.push_back(Impl::Scope{Impl::ScopeKind::kState, 0, id, false});
+    return *this;
+}
+
+StateMachine::Builder& StateMachine::Builder::impl(std::unique_ptr<State> state) {
+    impl_->finalizeTransition();
+    if (impl_->scopes.empty() || impl_->scopes.back().kind != Impl::ScopeKind::kState) {
+        impl_->error("impl() requires a current state");
+        return *this;
+    }
+    if (!state) {
+        impl_->error("state implementation must be non-null");
+        return *this;
+    }
+    const StateId id = impl_->scopes.back().state;
+    if (impl_->states[id].name == "state_" + std::to_string(id)) {
+        impl_->states[id].name = state->name();
+    }
+    impl_->states[id].state = std::move(state);
+    return *this;
+}
+
+StateMachine::Builder& StateMachine::Builder::endState() {
+    impl_->finalizeTransition();
+    bool popped_leaf = false;
+    while (!impl_->scopes.empty()) {
+        auto scope = impl_->scopes.back();
+        impl_->scopes.pop_back();
+        if (scope.kind != Impl::ScopeKind::kState) {
+            impl_->error("endState() without a state scope");
+            return *this;
+        }
+        if (scope.child_region_open) {
+            return *this;
+        }
+        popped_leaf = true;
+        if (impl_->scopes.empty() || impl_->scopes.back().kind == Impl::ScopeKind::kRegion) {
+            return *this;
+        }
+    }
+    if (!popped_leaf) {
+        impl_->error("endState() without a state scope");
+    }
+    return *this;
+}
+
+StateMachine::Builder& StateMachine::Builder::endRegion() {
+    impl_->finalizeTransition();
+    while (!impl_->scopes.empty()) {
+        auto scope = impl_->scopes.back();
+        impl_->scopes.pop_back();
+        if (scope.kind == Impl::ScopeKind::kRegion) {
+            return *this;
+        }
+    }
+    impl_->error("endRegion() without a region scope");
+    return *this;
+}
+
+StateMachine::Builder& StateMachine::Builder::transition() {
+    impl_->finalizeTransition();
+    impl_->pending_transition = TransitionRule{};
+    return *this;
+}
+
+StateMachine::Builder& StateMachine::Builder::from(StateId state) {
+    if (!impl_->pending_transition) {
+        impl_->pending_transition = TransitionRule{};
+    }
+    impl_->pending_transition->from = state;
+    return *this;
+}
+
+StateMachine::Builder& StateMachine::Builder::to(StateId state) {
+    if (!impl_->pending_transition) {
+        impl_->pending_transition = TransitionRule{};
+    }
+    impl_->pending_transition->target = state;
+    return *this;
+}
+
+StateMachine::Builder& StateMachine::Builder::on(EventId event) {
+    if (!impl_->pending_transition) {
+        impl_->pending_transition = TransitionRule{};
+    }
+    impl_->pending_transition->event = event;
+    return *this;
+}
+
+StateMachine::Builder& StateMachine::Builder::when(std::function<bool(const GuardContext&)> guard) {
+    if (!impl_->pending_transition) {
+        impl_->pending_transition = TransitionRule{};
+    }
+    impl_->pending_transition->guard = std::move(guard);
+    return *this;
+}
+
+StateMachine::Builder& StateMachine::Builder::priority(int priority) {
+    if (!impl_->pending_transition) {
+        impl_->pending_transition = TransitionRule{};
+    }
+    impl_->pending_transition->priority = priority;
+    return *this;
+}
+
+StateMachine::Builder& StateMachine::Builder::evaluationOrder(int evaluation_order) {
+    if (!impl_->pending_transition) {
+        impl_->pending_transition = TransitionRule{};
+    }
+    impl_->pending_transition->evaluation_order = evaluation_order;
+    return *this;
+}
+
+StateMachine::Builder& StateMachine::Builder::type(TransitionType type) {
+    if (!impl_->pending_transition) {
+        impl_->pending_transition = TransitionRule{};
+    }
+    impl_->pending_transition->type = type;
+    return *this;
+}
+
+StateMachine::Builder& StateMachine::Builder::global(bool enabled) {
+    if (!impl_->pending_transition) {
+        impl_->pending_transition = TransitionRule{};
+    }
+    impl_->pending_transition->global = enabled;
+    return *this;
+}
+
+StateMachine::Builder& StateMachine::Builder::action(std::function<ActionResult(StateContext&)> action) {
+    if (!impl_->pending_transition) {
+        impl_->pending_transition = TransitionRule{};
+    }
+    impl_->pending_transition->action = std::move(action);
+    return *this;
+}
+
+Result<std::unique_ptr<StateMachine>> StateMachine::Builder::build() {
+    impl_->finalizeTransition();
+    if (impl_->regions.empty()) {
+        impl_->error("state machine requires at least one region");
+    }
+
+    for (const auto& region_pair : impl_->regions) {
+        const auto& region = region_pair.second.config;
+        if (region.initial_state == 0) {
+            impl_->error("region " + std::to_string(region.id) + " is missing an initial state");
+            continue;
+        }
+        const auto state_it = impl_->states.find(region.initial_state);
+        if (state_it == impl_->states.end()) {
+            impl_->error("region " + std::to_string(region.id) + " initial state is not registered");
+            continue;
+        }
+        if (state_it->second.config.region != region.id) {
+            impl_->error("region " + std::to_string(region.id) + " initial state is not a direct child");
+        }
+        if (region.owner_state && impl_->states.count(*region.owner_state) == 0) {
+            impl_->error("region " + std::to_string(region.id) + " owner state is not registered");
+        }
+    }
+
+    for (const StateId id : impl_->state_order) {
+        auto& state = impl_->states[id];
+        if (impl_->regions.count(state.config.region) == 0) {
+            impl_->error("state " + std::to_string(id) + " region is not registered");
+        }
+        if (state.config.parent && impl_->states.count(*state.config.parent) == 0) {
+            impl_->error("state " + std::to_string(id) + " parent is not registered");
+        }
+        if (!state.state) {
+            state.state = std::make_unique<PassiveState>(state.name);
+        }
+    }
+
+    for (auto& transition : impl_->transitions) {
+        if (transition.from == 0 || impl_->states.count(transition.from) == 0) {
+            impl_->error("transition source state is not registered");
+            continue;
+        }
+        if (!transition.event && !transition.guard) {
+            impl_->error("condition-only transition requires when(guard)");
+        }
+        if (transition.target && impl_->states.count(*transition.target) == 0) {
+            impl_->error("transition target state is not registered");
+        }
+    }
+
+    if (!impl_->errors.empty()) {
+        return Result<std::unique_ptr<StateMachine>>::error(ErrorCode::kInvalidArgument, impl_->firstError());
+    }
+
+    auto machine = std::make_unique<StateMachine>(impl_->machine_name, impl_->options, impl_->clock);
+    for (RegionId id : impl_->region_order) {
+        auto status = machine->addRegion(impl_->regions[id].config);
+        if (!status.ok()) {
+            return Result<std::unique_ptr<StateMachine>>{status, nullptr};
+        }
+    }
+    for (StateId id : impl_->state_order) {
+        auto status = machine->addState(impl_->states[id].config, std::move(impl_->states[id].state));
+        if (!status.ok()) {
+            return Result<std::unique_ptr<StateMachine>>{status, nullptr};
+        }
+    }
+    for (auto& transition : impl_->transitions) {
+        auto status = machine->addTransition(std::move(transition));
+        if (!status.ok()) {
+            return Result<std::unique_ptr<StateMachine>>{status, nullptr};
+        }
+    }
+    return Result<std::unique_ptr<StateMachine>>::ok(std::move(machine));
+}
+
+StateMachine::Builder StateMachine::builder(std::string name, const RuntimeOptions& options,
+                                            std::shared_ptr<Clock> clock) {
+    return Builder(std::move(name), options, std::move(clock));
+}
+
+StateMachine::StateMachine(std::string name, const RuntimeOptions& options, std::shared_ptr<Clock> clock)
     : impl_(std::make_unique<Impl>(options, std::move(clock))), name_(std::move(name)) {
     impl_->machine = this;
 }
@@ -379,7 +1000,7 @@ Status StateMachine::addRegion(RegionConfig config) {
     if (impl_->regions.count(config.id) > 0) {
         return Status::error(ErrorCode::kAlreadyExists, "region already exists");
     }
-    RegionId id = config.id;
+    const RegionId id = config.id;
     impl_->regions[id] = StateMachine::Impl::RegionEntry{std::move(config), 0, impl_->next_region_registration_order++};
     impl_->region_order.push_back(id);
     impl_->sortRegionOrder();
@@ -402,13 +1023,7 @@ Status StateMachine::addState(StateConfig config, std::unique_ptr<State> state) 
         return Status::error(ErrorCode::kNotFound, "parent state is not registered");
     }
     if (impl_->regions.count(config.region) == 0) {
-        RegionConfig region;
-        region.id = config.region;
-        region.name = "region_" + std::to_string(config.region);
-        impl_->regions[config.region] =
-            StateMachine::Impl::RegionEntry{region, 0, impl_->next_region_registration_order++};
-        impl_->region_order.push_back(config.region);
-        impl_->sortRegionOrder();
+        return Status::error(ErrorCode::kNotFound, "state region is not registered");
     }
     impl_->states[config.id] = StateMachine::Impl::StateEntry{config, std::move(state), {}, false};
     return Status{};
@@ -423,18 +1038,25 @@ Status StateMachine::addTransition(TransitionRule rule) {
     if (rule.from == 0 || impl_->states.count(rule.from) == 0) {
         return Status::error(ErrorCode::kNotFound, "transition source state is not registered");
     }
+    if (!rule.event && !rule.guard) {
+        return Status::error(ErrorCode::kInvalidArgument, "condition-only transition requires a guard");
+    }
     if (rule.target && impl_->states.count(*rule.target) == 0) {
         return Status::error(ErrorCode::kNotFound, "transition target state is not registered");
+    }
+    if (rule.target && impl_->topLevelRegionOfState(rule.from) != impl_->topLevelRegionOfState(*rule.target)) {
+        return Status::error(ErrorCode::kInvalidArgument, "transition target must stay in the same top-level region");
     }
     if (rule.id == 0) {
         rule.id = impl_->next_transition_id++;
     }
     rule.registration_order = impl_->next_transition_registration_order++;
-    if (rule.region == 0) {
-        rule.region = impl_->stateRegion(rule.from);
-    }
+    rule.region = impl_->topLevelRegionOfState(rule.from);
     impl_->transitions.push_back(std::move(rule));
     std::stable_sort(impl_->transitions.begin(), impl_->transitions.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.from != rhs.from) {
+            return lhs.registration_order < rhs.registration_order;
+        }
         if (lhs.priority != rhs.priority) {
             return lhs.priority > rhs.priority;
         }
@@ -443,32 +1065,6 @@ Status StateMachine::addTransition(TransitionRule rule) {
         }
         return lhs.registration_order < rhs.registration_order;
     });
-    return Status{};
-}
-
-Status StateMachine::setInitialState(StateSelection selection) {
-    std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
-    auto status = impl_->ensureConfiguring("setInitialState");
-    if (!status.ok()) {
-        return status;
-    }
-    const auto state_it = impl_->states.find(selection.state);
-    if (state_it == impl_->states.end()) {
-        return Status::error(ErrorCode::kNotFound, "initial state is not registered");
-    }
-    if (impl_->regions.count(selection.region) == 0) {
-        RegionConfig config;
-        config.id = selection.region;
-        config.name = "region_" + std::to_string(selection.region);
-        config.initial_state = selection.state;
-        impl_->regions[selection.region] =
-            StateMachine::Impl::RegionEntry{config, 0, impl_->next_region_registration_order++};
-        impl_->region_order.push_back(selection.region);
-        impl_->sortRegionOrder();
-    }
-    auto& entry = impl_->regions[selection.region];
-    entry.config.initial_state = selection.state;
-    entry.active_leaf = selection.state;
     return Status{};
 }
 
@@ -482,28 +1078,22 @@ Status StateMachine::start() {
     if (!status.ok()) {
         return status;
     }
-    for (auto& region_pair : impl_->regions) {
-        auto& region = region_pair.second;
-        if (region.config.initial_state == 0) {
+    for (const auto& region_pair : impl_->regions) {
+        const auto& region = region_pair.second.config;
+        if (region.initial_state == 0) {
             return Status::error(ErrorCode::kInvalidArgument, "every region needs an initial state");
         }
-        region.active_leaf = region.config.initial_state;
+        const auto state_it = impl_->states.find(region.initial_state);
+        if (state_it == impl_->states.end() || state_it->second.config.region != region.id) {
+            return Status::error(ErrorCode::kInvalidArgument, "region initial state must be a direct child");
+        }
     }
     impl_->lifecycle = MachineLifecycle::kRunning;
-    for (RegionId region_id : impl_->region_order) {
-        const auto& region = impl_->regions[region_id];
-        const auto path = impl_->pathToRoot(region.active_leaf);
-        for (StateId state : path) {
-            impl_->states[state].active = true;
-            impl_->states[state].entered_at = impl_->now();
-            auto cb_status = impl_->callStateCallback(state, region_id, CallbackKind::kOnEnter, nullptr,
-                                                      [](State& active_state, StateContext& ctx) {
-                                                          return active_state.onEnter(ctx);
-                                                      });
-            if (!cb_status.ok()) {
-                impl_->lifecycle = MachineLifecycle::kFaulted;
-                return cb_status;
-            }
+    for (RegionId region_id : impl_->topLevelRegions()) {
+        status = impl_->enterRegionDefault(region_id, nullptr);
+        if (!status.ok()) {
+            impl_->lifecycle = MachineLifecycle::kFaulted;
+            return status;
         }
     }
     EventLogRecord record;
@@ -544,7 +1134,6 @@ Status StateMachine::postEvent(Event event) {
         return Status::error(impl_->lifecycle == MachineLifecycle::kStopped ? ErrorCode::kStopped : ErrorCode::kFaulted,
                              "event rejected by lifecycle");
     }
-
     return impl_->enqueueEvent(std::move(event));
 }
 
@@ -696,7 +1285,7 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         return visible;
     };
 
-    auto evaluate_guard = [&](TransitionRule& rule, const Event& event) -> bool {
+    auto evaluate_guard = [&](TransitionRule& rule, const Event* event) -> bool {
         if (!rule.guard) {
             return true;
         }
@@ -705,44 +1294,41 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
             return rule.guard(ctx);
         } catch (const std::exception& ex) {
             ++result.faults_recorded;
-            impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id, CallbackKind::kGuard,
+            impl_->recordFault(StateMachine::Impl::faultInput(event, rule.from, rule.id, CallbackKind::kGuard,
                                                               exceptionMessage(ex), typeid(ex).name()));
             return false;
         } catch (...) {
             ++result.faults_recorded;
             impl_->recordFault(
-                StateMachine::Impl::faultInput(&event, rule.from, rule.id, CallbackKind::kGuard, exceptionMessage()));
+                StateMachine::Impl::faultInput(event, rule.from, rule.id, CallbackKind::kGuard, exceptionMessage()));
             return false;
         }
     };
 
-    auto commit_transition = [&](TransitionRule& rule, RegionId region_id, const Event& event) {
-        StateId from_leaf = impl_->regions[region_id].active_leaf;
-        StateId to_leaf = rule.target.value_or(from_leaf);
+    auto commit_transition = [&](TransitionRule& rule, RegionId region_id, const Event* event) {
+        const auto current_active = impl_->activeStatesInRegion(region_id);
+        const StateId from_leaf = current_active.empty() ? 0 : current_active.back();
         const bool no_exit_enter = rule.type == TransitionType::kInternal || rule.type == TransitionType::kTargetless;
-        std::vector<StateId> exit_path;
-        std::vector<StateId> enter_path;
+        StateId to_state = rule.target.value_or(rule.from);
+        std::vector<StateId> exit_roots;
+        std::vector<StateId> enter_suffix;
+
         if (!no_exit_enter) {
-            const auto from_path = impl_->pathToRoot(from_leaf);
-            const auto to_path = impl_->pathToRoot(to_leaf);
-            size_t prefix = rule.type == TransitionType::kExternalSelf && from_leaf == to_leaf
+            const auto from_path = impl_->pathToRoot(rule.from);
+            const auto to_path = impl_->pathToRoot(to_state);
+            size_t prefix = rule.type == TransitionType::kExternalSelf && rule.from == to_state && !from_path.empty()
                                 ? from_path.size() - 1
                                 : impl_->commonPrefix(from_path, to_path);
             for (size_t i = from_path.size(); i > prefix; --i) {
-                exit_path.push_back(from_path[i - 1]);
+                exit_roots.push_back(from_path[i - 1]);
             }
             for (size_t i = prefix; i < to_path.size(); ++i) {
-                enter_path.push_back(to_path[i]);
+                enter_suffix.push_back(to_path[i]);
             }
         }
 
-        for (StateId state : exit_path) {
-            impl_->cancelTasksForStateExit(state);
-            auto status = impl_->callStateCallback(state, region_id, CallbackKind::kOnExit, &event,
-                                                   [](State& active_state, StateContext& ctx) {
-                                                       return active_state.onExit(ctx);
-                                                   });
-            impl_->states[state].active = false;
+        for (StateId state : exit_roots) {
+            auto status = impl_->exitState(state, event);
             if (!status.ok()) {
                 ++result.faults_recorded;
             }
@@ -750,53 +1336,40 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
 
         if (rule.action) {
             try {
-                StateContext ctx(*this, StateContext::Config{{region_id, rule.from}, &event, impl_->generated_events});
+                StateContext ctx(
+                    *this,
+                    StateContext::Config{{impl_->stateRegion(rule.from), rule.from}, event, impl_->generated_events});
                 auto status = rule.action(ctx);
                 if (!status.ok()) {
                     ++result.faults_recorded;
-                    impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id, CallbackKind::kAction,
+                    impl_->recordFault(StateMachine::Impl::faultInput(event, rule.from, rule.id, CallbackKind::kAction,
                                                                       status.message));
                 }
             } catch (const std::exception& ex) {
                 ++result.faults_recorded;
-                impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id, CallbackKind::kAction,
+                impl_->recordFault(StateMachine::Impl::faultInput(event, rule.from, rule.id, CallbackKind::kAction,
                                                                   exceptionMessage(ex), typeid(ex).name()));
             } catch (...) {
                 ++result.faults_recorded;
-                impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id, CallbackKind::kAction,
+                impl_->recordFault(StateMachine::Impl::faultInput(event, rule.from, rule.id, CallbackKind::kAction,
                                                                   exceptionMessage()));
             }
         }
 
         if (!no_exit_enter) {
             if (rule.global) {
-                for (RegionId id : impl_->region_order) {
+                for (RegionId id : impl_->topLevelRegions()) {
                     if (id != region_id) {
-                        auto other_path = impl_->pathToRoot(impl_->regions[id].active_leaf);
-                        for (auto it = other_path.rbegin(); it != other_path.rend(); ++it) {
-                            impl_->cancelTasksForStateExit(*it);
-                            auto status = impl_->callStateCallback(*it, id, CallbackKind::kOnExit, &event,
-                                                                   [](State& active_state, StateContext& ctx) {
-                                                                       return active_state.onExit(ctx);
-                                                                   });
-                            if (!status.ok()) {
-                                ++result.faults_recorded;
-                            }
-                            impl_->states[*it].active = false;
+                        auto status = impl_->exitRegion(id, event);
+                        if (!status.ok()) {
+                            ++result.faults_recorded;
                         }
-                        impl_->cancelTasksForRegionExit(id);
-                        impl_->regions[id].active_leaf = 0;
                     }
                 }
             }
-            impl_->regions[region_id].active_leaf = to_leaf;
-            for (StateId state : enter_path) {
-                impl_->states[state].active = true;
-                impl_->states[state].entered_at = impl_->now();
-                auto status = impl_->callStateCallback(state, region_id, CallbackKind::kOnEnter, &event,
-                                                       [](State& active_state, StateContext& ctx) {
-                                                           return active_state.onEnter(ctx);
-                                                       });
+            for (size_t i = 0; i < enter_suffix.size(); ++i) {
+                const bool expand_defaults = i + 1 == enter_suffix.size();
+                auto status = impl_->enterState(enter_suffix[i], event, expand_defaults);
                 if (!status.ok()) {
                     ++result.faults_recorded;
                 }
@@ -804,21 +1377,30 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         }
 
         ++result.transitions_committed;
-        ++result.events_processed;
+        if (event) {
+            ++result.events_processed;
+        }
         ProcessedEventRecord processed;
-        processed.event = event;
+        if (event) {
+            processed.event = *event;
+        } else {
+            processed.event.category = EventCategory::kInternal;
+            processed.event.source = "condition";
+        }
         processed.triggered_transition = true;
         processed.region = region_id;
         processed.from_state = from_leaf;
-        processed.to_state = no_exit_enter ? from_leaf : to_leaf;
+        processed.to_state = no_exit_enter ? from_leaf : to_state;
         processed.transition = rule.id;
         processed.priority = rule.priority;
         impl_->current_events.push_back(processed);
 
         EventLogRecord record;
         record.kind = EventLogRecord::Kind::kTransitionCommitted;
-        record.sequence = event.sequence;
-        record.event_id = event.id;
+        if (event) {
+            record.sequence = event->sequence;
+            record.event_id = event->id;
+        }
         record.region = region_id;
         record.from_state = from_leaf;
         record.to_state = processed.to_state;
@@ -828,7 +1410,8 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
 
     {
         std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
-        for (size_t region_index = 0; region_index < impl_->region_order.size(); ++region_index) {
+        const auto top_regions = impl_->topLevelRegions();
+        for (size_t region_index = 0; region_index < top_regions.size(); ++region_index) {
             if (result.transitions_committed >= options.max_transitions_per_update) {
                 result.hit_transition_limit = true;
                 EventLogRecord record;
@@ -838,7 +1421,7 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                 break;
             }
 
-            const RegionId region_id = impl_->region_order[region_index];
+            const RegionId region_id = top_regions[region_index];
             auto region_it = impl_->regions.find(region_id);
             if (region_it == impl_->regions.end() || region_it->second.active_leaf == 0) {
                 continue;
@@ -848,104 +1431,82 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
             impl_->current_region_index = region_index;
 
             if (options.run_tick) {
-                StateId leaf = region_it->second.active_leaf;
-                const auto status = impl_->callStateCallback(leaf, region_id, CallbackKind::kOnTick, nullptr,
-                                                             [](State& state, StateContext& ctx) {
-                                                                 return state.onTick(ctx);
-                                                             });
-                if (!status.ok()) {
-                    ++result.faults_recorded;
+                const auto active_for_tick = impl_->activeStatesInRegion(region_id);
+                for (StateId state : active_for_tick) {
+                    const auto status = impl_->callStateCallback(state, CallbackKind::kOnTick, nullptr,
+                                                                 [](State& active_state, StateContext& ctx) {
+                                                                     return active_state.onTick(ctx);
+                                                                 });
+                    if (!status.ok()) {
+                        ++result.faults_recorded;
+                    }
                 }
             }
 
             const auto visible = visible_events_for_region(region_index);
-
-            struct Candidate {
-                TransitionRule* rule{nullptr};
-                const Event* event{nullptr};
-                RegionId region{0};
-                size_t state_depth{0};
-            };
-
-            const auto active_path = impl_->pathToRoot(region_it->second.active_leaf);
-            std::vector<Candidate> candidates;
-            for (const Event* event : visible) {
-                if (!event || event->category == EventCategory::kOutput) {
-                    continue;
-                }
+            const auto active_for_transition = impl_->activeStatesInRegion(region_id);
+            TransitionRule* selected_rule = nullptr;
+            const Event* selected_event = nullptr;
+            for (StateId state : active_for_transition) {
                 for (auto& rule : impl_->transitions) {
-                    if (rule.event != 0 && rule.event != event->id) {
+                    if (rule.from != state || rule.region != region_id) {
                         continue;
                     }
-                    const RegionId rule_region = rule.region == 0 ? impl_->stateRegion(rule.from) : rule.region;
-                    if (rule_region != region_id) {
-                        continue;
+                    if (rule.event) {
+                        for (const Event* event : visible) {
+                            if (!event || event->category == EventCategory::kOutput || event->id != *rule.event) {
+                                continue;
+                            }
+                            if (evaluate_guard(rule, event)) {
+                                selected_rule = &rule;
+                                selected_event = event;
+                                break;
+                            }
+                        }
+                    } else if (evaluate_guard(rule, nullptr)) {
+                        selected_rule = &rule;
+                        selected_event = nullptr;
                     }
-                    if (rule.target && impl_->stateRegion(*rule.target) != region_id) {
-                        continue;
+                    if (selected_rule != nullptr) {
+                        break;
                     }
-                    const auto state_it = std::find(active_path.begin(), active_path.end(), rule.from);
-                    if (state_it == active_path.end()) {
-                        continue;
-                    }
-                    const size_t depth = static_cast<size_t>(std::distance(active_path.begin(), state_it));
-                    candidates.push_back(Candidate{&rule, event, region_id, depth});
                 }
-            }
-
-            std::stable_sort(candidates.begin(), candidates.end(), [](const Candidate& lhs, const Candidate& rhs) {
-                if (lhs.rule->priority != rhs.rule->priority) {
-                    return lhs.rule->priority > rhs.rule->priority;
-                }
-                if (lhs.rule->evaluation_order != rhs.rule->evaluation_order) {
-                    return lhs.rule->evaluation_order < rhs.rule->evaluation_order;
-                }
-                if (lhs.state_depth != rhs.state_depth) {
-                    return lhs.state_depth > rhs.state_depth;
-                }
-                if (lhs.rule->registration_order != rhs.rule->registration_order) {
-                    return lhs.rule->registration_order < rhs.rule->registration_order;
-                }
-                return lhs.event->sequence < rhs.event->sequence;
-            });
-
-            Candidate* selected = nullptr;
-            for (auto& candidate : candidates) {
-                if (evaluate_guard(*candidate.rule, *candidate.event)) {
-                    selected = &candidate;
+                if (selected_rule != nullptr) {
                     break;
                 }
             }
 
-            if (selected) {
-                commit_transition(*selected->rule, selected->region, *selected->event);
-            } else if (region_it->second.active_leaf != 0) {
-                StateId leaf = region_it->second.active_leaf;
+            if (selected_rule != nullptr) {
+                commit_transition(*selected_rule, region_id, selected_event);
+            } else {
+                const auto active_for_events = impl_->activeStatesInRegion(region_id);
                 for (const Event* event : visible) {
                     if (!event || event->category == EventCategory::kOutput) {
                         continue;
                     }
-                    auto status = impl_->callStateCallback(leaf, region_id, CallbackKind::kOnEvent, event,
-                                                           [&](State& state, StateContext& ctx) {
-                                                               return state.onEvent(ctx, *event);
-                                                           });
-                    if (!status.ok()) {
-                        ++result.faults_recorded;
+                    for (StateId state : active_for_events) {
+                        auto status = impl_->callStateCallback(state, CallbackKind::kOnEvent, event,
+                                                               [&](State& active_state, StateContext& ctx) {
+                                                                   return active_state.onEvent(ctx, *event);
+                                                               });
+                        if (!status.ok()) {
+                            ++result.faults_recorded;
+                        }
+                        ++result.events_processed;
+                        ProcessedEventRecord processed;
+                        processed.event = *event;
+                        processed.region = region_id;
+                        processed.from_state = state;
+                        processed.to_state = state;
+                        impl_->current_events.push_back(processed);
                     }
-                    ++result.events_processed;
-                    ProcessedEventRecord processed;
-                    processed.event = *event;
-                    processed.region = region_id;
-                    processed.from_state = leaf;
-                    processed.to_state = leaf;
-                    impl_->current_events.push_back(processed);
                 }
             }
 
             impl_->processing_region = false;
         }
 
-        const size_t next_tick_index = impl_->region_order.size();
+        const size_t next_tick_index = top_regions.size();
         for (auto& entry : impl_->current_internal_events) {
             if (entry.first_visible_region_index >= next_tick_index) {
                 impl_->pending_internal_events.push_back(std::move(entry.event));
@@ -957,21 +1518,11 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
     {
         std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
         if (impl_->stop_requested) {
-            for (RegionId region_id : impl_->region_order) {
-                auto& region = impl_->regions[region_id];
-                auto path = impl_->pathToRoot(region.active_leaf);
-                for (auto it = path.rbegin(); it != path.rend(); ++it) {
-                    impl_->cancelTasksForStateExit(*it);
-                    auto status = impl_->callStateCallback(*it, region_id, CallbackKind::kOnExit, nullptr,
-                                                           [](State& active_state, StateContext& ctx) {
-                                                               return active_state.onExit(ctx);
-                                                           });
-                    if (!status.ok()) {
-                        ++result.faults_recorded;
-                    }
-                    impl_->states[*it].active = false;
+            for (RegionId region_id : impl_->topLevelRegions()) {
+                auto status = impl_->exitRegion(region_id, nullptr);
+                if (!status.ok()) {
+                    ++result.faults_recorded;
                 }
-                region.active_leaf = 0;
             }
             impl_->cancelTasksForMachineStop();
             impl_->lifecycle = MachineLifecycle::kStopped;
@@ -1009,8 +1560,9 @@ MachineSnapshot StateMachine::snapshot() const {
     }
     snapshot.inbox_size += impl_->pending_internal_events.size();
     for (const auto& region_pair : impl_->regions) {
-        snapshot.active_leaf_states[region_pair.first] = region_pair.second.active_leaf;
-        snapshot.active_state_paths[region_pair.first] = impl_->pathToRoot(region_pair.second.active_leaf);
+        const auto active = impl_->activeStatesInRegion(region_pair.first);
+        snapshot.active_leaf_states[region_pair.first] = active.empty() ? 0 : active.back();
+        snapshot.active_state_paths[region_pair.first] = active;
     }
     snapshot.recent_faults.assign(impl_->fault_log.begin(), impl_->fault_log.end());
     return snapshot;
@@ -1043,17 +1595,22 @@ MachineLifecycle StateMachine::lifecycle() const {
 
 StateId StateMachine::currentState(RegionId region) const {
     std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
-    auto it = impl_->regions.find(region);
-    return it == impl_->regions.end() ? 0 : it->second.active_leaf;
+    const auto active = impl_->activeStatesInRegion(region);
+    return active.empty() ? 0 : active.back();
+}
+
+std::vector<StateId> StateMachine::currentStatePath(RegionId region) const {
+    std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
+    return impl_->activeStatesInRegion(region);
 }
 
 std::string StateMachine::currentStateName(RegionId region) const {
     std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
-    const auto region_it = impl_->regions.find(region);
-    if (region_it == impl_->regions.end()) {
+    const auto active = impl_->activeStatesInRegion(region);
+    if (active.empty()) {
         return {};
     }
-    const auto state_it = impl_->states.find(region_it->second.active_leaf);
+    const auto state_it = impl_->states.find(active.back());
     if (state_it == impl_->states.end() || !state_it->second.state) {
         return {};
     }
@@ -1083,14 +1640,16 @@ size_t StateMachine::generatedEventCount() const {
     return impl_->generated_events;
 }
 
-GuardContext::GuardContext(const StateMachine& machine, const Event& event) : machine_(machine), event_(event) {}
+GuardContext::GuardContext(const StateMachine& machine, const Event* event) : machine_(machine), event_(event) {}
 
 TimePoint GuardContext::now() const {
     return machine_.now();
 }
+
 Duration GuardContext::elapsed(StateId state) const {
     return machine_.elapsed(state);
 }
+
 MachineSnapshot GuardContext::snapshot() const {
     return machine_.snapshot();
 }
@@ -1110,9 +1669,11 @@ Status StateContext::emitOutput(Event event) {
     std::lock_guard<std::recursive_mutex> lock(impl.state_mutex);
     return impl.enqueueOutputEvent(std::move(event));
 }
+
 TimePoint StateContext::now() const {
     return machine_.now();
 }
+
 Duration StateContext::elapsed(StateId state) const {
     return machine_.elapsed(state);
 }
@@ -1139,12 +1700,15 @@ Result<TaskHandle> StateContext::startTask(TaskCancelPolicy policy, CorrelationI
 Status StateContext::cancelTask(const TaskHandle& handle) {
     return machine_.cancelTask(handle);
 }
+
 StateId StateContext::currentState(RegionId region) const {
     return machine_.currentState(region);
 }
+
 MachineSnapshot StateContext::snapshot() const {
     return machine_.snapshot();
 }
+
 size_t StateContext::generatedEvents() const {
     return machine_.generatedEventCount() - generated_events_before_;
 }

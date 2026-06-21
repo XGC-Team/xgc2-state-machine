@@ -19,11 +19,12 @@
 - State callbacks may create `kInternal` events with `StateContext::postInternalEvent()`. Internal events produced by an earlier ordered region are visible to later regions in the same tick; events produced by later regions never affect already-executed regions until a later tick.
 - State callbacks may create `kOutput` events with `StateContext::emitOutput()`. Output events never drive transitions or `onEvent()` and are exposed through `currentOutputEvents()` for external consumers.
 - Guards receive `GuardContext`, which is read-only. Actions and state callbacks receive `StateContext`, which can post internal events, emit output events, and manage tasks.
-- Hierarchical transitions use leaf-to-root selection and LCA-based exit/enter order.
+- Hierarchical transitions use parent-to-child evaluation and LCA-based exit/enter order. Entering a parent state automatically expands that state's default child-region chain.
 - Transition types are `External`, `ExternalSelf`, `Internal`, and `Targetless`.
-- Regions are evaluated by `RegionConfig::execution_order`, with registration order as a stable tie-breaker.
-- Each region can commit at most one transition per update tick.
-- Transition candidates are selected from visible input/internal events and the active state path. Events carry no priority. Candidate ordering is transition `priority` descending, `evaluation_order` ascending, deeper active state first, registration order, then event sequence as a final tie-breaker.
+- Top-level parallel regions are evaluated by `RegionConfig::execution_order`, with registration order as a stable tie-breaker.
+- Each top-level region can commit at most one transition per update tick.
+- Transitions are evaluated on the active configuration from parent to child. Within the same source state, rules short-circuit by transition `priority` descending, `evaluation_order` ascending, and registration order. Events carry no priority.
+- Condition-only transitions are expressed as builder `.when(guard)` rules and are evaluated once per tick while their source state is active.
 - Global transitions close other regions when committed. They are still evaluated from their source region according to the same ordered-region pass.
 - Task results are accepted only if the task is active, correlation matches, and the owner state remains active in the region path. `KeepRunning` means the runtime does not request cancellation on state exit; it does not bypass stale-result filtering. Long-lived tasks should be owned by a parent state that remains active for the intended lifetime.
 - Faults are logged and converted into fault events. Repeated fault handling is fused by `RuntimeOptions::max_fault_depth`.
@@ -31,12 +32,12 @@
 
 ## Interface Boundary
 
-The public API is `state_machine/state_machine.hpp`. `StateMachine` and `State` are the only public runtime types for machine and state objects.
+The public API is `state_machine/state_machine.hpp`. Graph construction is builder-only through `StateMachine::builder(...)`; direct graph mutation is private runtime implementation detail.
 
 - callback-side direct state mutation is not supported;
 - external events posted during callbacks are processed in later update snapshots;
 - internal events posted during callbacks follow ordered-region same-tick visibility;
-- new code must use `StateMachine`, `State`, `TransitionRule`, `GuardContext`, and `StateContext`;
+- new code should define the graph with the builder and keep business logic inside `State`, `GuardContext`, and `StateContext` callbacks;
 - projects that need a domain-specific state base should wrap `State` locally without reintroducing synchronous transition or recursive event semantics.
 
 ## Non-goals
@@ -49,24 +50,12 @@ The public API is `state_machine/state_machine.hpp`. `StateMachine` and `State` 
 
 ## Verification
 
-The package includes gtest coverage for FIFO sequencing, bounded snapshots, pending-event capacity, concurrent event posting, owner/reentrant update checks, lifecycle freezing, hierarchy, transition variants, parallel regions, global preemption, task stale filtering and cancellation policies, fault fuse behavior, stop semantics, and logs/snapshot copies.
+The package includes gtest coverage for builder validation, default child expansion, parent transitions, condition-only transitions, ordered parallel regions, internal/output event isolation, transition short-circuiting, and pure-logic tick performance.
 
-Useful commands from `source/ros1_ws`:
-
-```bash
-catkin_make run_tests_state_machine
-catkin_test_results build/test_results/state_machine
-```
-
-Direct sanitizer check:
+Useful command:
 
 ```bash
-g++ -std=c++17 -fsanitize=address,undefined -fno-omit-frame-pointer -pthread \
-  -Isrc/common/state_machine/include \
-  src/common/state_machine/src/state_machine.cpp \
-  src/common/state_machine/test/state_machine_runtime_test.cpp \
-  -lgtest -o /tmp/state_machine_runtime_test_asan
-/tmp/state_machine_runtime_test_asan
+.xgc2/scripts/check_cpp_quality.sh
 ```
 
 Coverage check:

@@ -83,52 +83,32 @@ public:
 };
 
 void setup() {
-    sm::StateMachine machine("example");
+    auto built = sm::StateMachine::builder("example")
+        .region(sm::kDefaultRegion)
+            .name("main")
+            .initial(kIdle)
+            .state(kIdle).impl(std::make_unique<IdleState>())
+            .state(kActive).impl(std::make_unique<ActiveState>())
+        .endRegion()
+        .transition().from(kIdle).to(kActive).on(kStart)
+        .transition().from(kActive).to(kIdle).on(kStop)
+        .build();
+    if (!built.ok()) {
+        throw std::runtime_error(built.status.message);
+    }
+    auto machine = std::move(built.value);
 
-    auto status = machine.addState({kIdle}, std::make_unique<IdleState>());
+    auto status = machine->start();
     if (!status.ok()) {
         throw std::runtime_error(status.message);
     }
 
-    status = machine.addState({kActive}, std::make_unique<ActiveState>());
+    status = machine->postEvent(sm::Event(kStart));
     if (!status.ok()) {
         throw std::runtime_error(status.message);
     }
 
-    sm::TransitionRule start_rule;
-    start_rule.from = kIdle;
-    start_rule.target = kActive;
-    start_rule.event = kStart;
-    status = machine.addTransition(std::move(start_rule));
-    if (!status.ok()) {
-        throw std::runtime_error(status.message);
-    }
-
-    sm::TransitionRule stop_rule;
-    stop_rule.from = kActive;
-    stop_rule.target = kIdle;
-    stop_rule.event = kStop;
-    status = machine.addTransition(std::move(stop_rule));
-    if (!status.ok()) {
-        throw std::runtime_error(status.message);
-    }
-
-    status = machine.setInitialState({sm::kDefaultRegion, kIdle});
-    if (!status.ok()) {
-        throw std::runtime_error(status.message);
-    }
-
-    status = machine.start();
-    if (!status.ok()) {
-        throw std::runtime_error(status.message);
-    }
-
-    status = machine.postEvent(sm::Event(kStart));
-    if (!status.ok()) {
-        throw std::runtime_error(status.message);
-    }
-
-    auto result = machine.update();
+    auto result = machine->update();
     if (!result.ok()) {
         throw std::runtime_error(result.status.message);
     }
@@ -143,16 +123,15 @@ Core types:
 
 - `StateMachine`: owns graph configuration, event queue, active states, task records, and logs.
 - `State`: base class for user-defined state behavior.
-- `TransitionRule`: event-triggered transition declaration with optional guard and action.
+- `StateMachine::Builder`: the only public graph-construction API; it defines regions, states, defaults, and transitions.
+- `TransitionRule`: internal transition declaration assembled by the builder.
 - `StateContext`: callback context that can post internal events, emit output events, start/cancel tasks, and query snapshots.
 - `GuardContext`: read-only context for transition guards.
 - `Status` and `Result<T>`: explicit success/failure return values.
 
 Common machine calls:
 
-- `addState(StateConfig, std::unique_ptr<State>)`
-- `addTransition(TransitionRule)`
-- `setInitialState({RegionId, StateId})`
+- `StateMachine::builder(name).region(...).state(...).transition(...).build()`
 - `start()`
 - `postEvent(Event)`
 - `update(UpdateOptions)`
