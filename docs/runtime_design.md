@@ -12,14 +12,19 @@
 
 - The owner thread is bound by `bindOwnerThread()` or the first successful `start()`. `update()` from another thread is rejected.
 - `update()` is non-reentrant. Recursive update attempts return `kUpdateAlreadyInProgress`, record a fault, and enqueue a fault event for a future update.
-- `postEvent()` is thread-safe. FIFO order is defined by the runtime-assigned monotonic `Event::sequence`.
+- `postEvent()` is thread-safe and accepts only `EventCategory::kInput`. FIFO order is defined by the runtime-assigned monotonic `Event::sequence`, but event order is not a business priority mechanism.
 - `RuntimeOptions::max_pending_events` bounds the pending inbox. A value of `0` disables the bound.
 - Runtime-generated fault events bypass the pending-inbox bound so callback faults cannot be silently hidden by normal event backpressure.
-- Each `update()` takes a bounded snapshot of the inbox. Events posted during callbacks or by other threads are processed by later updates.
-- Guards receive `GuardContext`, which is read-only. Actions and state callbacks receive `StateContext`, which can post events and manage tasks.
+- Each `update()` is one logical tick. It takes a bounded snapshot of external input events at tick start. External events posted during callbacks or by other threads are processed by later updates.
+- State callbacks may create `kInternal` events with `StateContext::postInternalEvent()`. Internal events produced by an earlier ordered region are visible to later regions in the same tick; events produced by later regions never affect already-executed regions until a later tick.
+- State callbacks may create `kOutput` events with `StateContext::emitOutput()`. Output events never drive transitions or `onEvent()` and are exposed through `currentOutputEvents()` for external consumers.
+- Guards receive `GuardContext`, which is read-only. Actions and state callbacks receive `StateContext`, which can post internal events, emit output events, and manage tasks.
 - Hierarchical transitions use leaf-to-root selection and LCA-based exit/enter order.
 - Transition types are `External`, `ExternalSelf`, `Internal`, and `Targetless`.
-- Global transitions preempt region-local transitions. Otherwise, fixed regions are evaluated and committed in registration order.
+- Regions are evaluated by `RegionConfig::execution_order`, with registration order as a stable tie-breaker.
+- Each region can commit at most one transition per update tick.
+- Transition candidates are selected from visible input/internal events and the active state path. Events carry no priority. Candidate ordering is transition `priority` descending, `evaluation_order` ascending, deeper active state first, registration order, then event sequence as a final tie-breaker.
+- Global transitions close other regions when committed. They are still evaluated from their source region according to the same ordered-region pass.
 - Task results are accepted only if the task is active, correlation matches, and the owner state remains active in the region path. `KeepRunning` means the runtime does not request cancellation on state exit; it does not bypass stale-result filtering. Long-lived tasks should be owned by a parent state that remains active for the intended lifetime.
 - Faults are logged and converted into fault events. Repeated fault handling is fused by `RuntimeOptions::max_fault_depth`.
 - `stop()` is a thread-safe request. State exits happen deterministically in the owner update.
@@ -29,7 +34,8 @@
 The public API is `state_machine/state_machine.hpp`. `StateMachine` and `State` are the only public runtime types for machine and state objects.
 
 - callback-side direct state mutation is not supported;
-- events posted during callbacks are processed in later update snapshots;
+- external events posted during callbacks are processed in later update snapshots;
+- internal events posted during callbacks follow ordered-region same-tick visibility;
 - new code must use `StateMachine`, `State`, `TransitionRule`, `GuardContext`, and `StateContext`;
 - projects that need a domain-specific state base should wrap `State` locally without reintroducing synchronous transition or recursive event semantics.
 

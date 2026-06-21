@@ -5,7 +5,8 @@
 The runtime is intentionally simple:
 
 - the state graph is configured before `start()`;
-- events enter the machine through `postEvent()` or callback-side `StateContext::postEvent()`;
+- external events enter the machine through `postEvent()` as `EventCategory::kInput`;
+- state callbacks can create `kInternal` events with `StateContext::postInternalEvent()` and side-effect requests with `StateContext::emitOutput()`;
 - all state transitions, callbacks, task bookkeeping, and fault handling run inside the owner thread's `update()`;
 - cross-thread inputs are accepted only as queued events;
 - public APIs return `Status` or `Result<T>` and must be checked by callers.
@@ -143,7 +144,7 @@ Core types:
 - `StateMachine`: owns graph configuration, event queue, active states, task records, and logs.
 - `State`: base class for user-defined state behavior.
 - `TransitionRule`: event-triggered transition declaration with optional guard and action.
-- `StateContext`: callback context that can post events, start/cancel tasks, and query snapshots.
+- `StateContext`: callback context that can post internal events, emit output events, start/cancel tasks, and query snapshots.
 - `GuardContext`: read-only context for transition guards.
 - `Status` and `Result<T>`: explicit success/failure return values.
 
@@ -156,7 +157,7 @@ Common machine calls:
 - `postEvent(Event)`
 - `update(UpdateOptions)`
 - `stop()`
-- `snapshot()`, `eventLog()`, `faultLog()`, `currentEvents()`
+- `snapshot()`, `eventLog()`, `faultLog()`, `currentEvents()`, `currentOutputEvents()`
 
 ## Threading Rules
 
@@ -164,7 +165,7 @@ Common machine calls:
 
 `update()` is owner-thread only. The owner is bound by `bindOwnerThread()` or by the first successful `start()`. Calling `update()` from another thread returns `kWrongOwnerThread`. Recursive `update()` returns `kUpdateAlreadyInProgress`, records a fault, and schedules a fault event.
 
-State callbacks should not directly mutate the graph or call `update()`. They should return `Status` and use `StateContext::postEvent()` when they need follow-up behavior.
+State callbacks should not directly mutate the graph or call `update()`. They should return `Status`, use `StateContext::postInternalEvent()` for follow-up FSM behavior, and use `StateContext::emitOutput()` for work that must be consumed outside the FSM.
 
 ## Build And Test
 

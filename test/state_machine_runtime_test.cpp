@@ -72,7 +72,10 @@ class RecordingState final : public sm::State {
             reenter_machine = nullptr;
         }
         if (post_on_tick != 0) {
-            ctx.postEvent(sm::Event(post_on_tick));
+            ctx.postInternalEvent(sm::Event(post_on_tick));
+        }
+        if (emit_output_on_tick != 0) {
+            ctx.emitOutput(sm::Event(emit_output_on_tick));
         }
         if (start_task_on_tick) {
             auto result = ctx.startTask(task_policy, task_correlation);
@@ -102,12 +105,13 @@ class RecordingState final : public sm::State {
         }
         log_.push_back("event:" + name_ + ":" + std::to_string(event.id));
         for (auto id : post_on_event) {
-            ctx.postEvent(sm::Event(id));
+            ctx.postInternalEvent(sm::Event(id));
         }
         return event_status;
     }
 
     sm::EventId post_on_tick{0};
+    sm::EventId emit_output_on_tick{0};
     std::vector<sm::EventId> post_on_event;
     bool start_task_on_tick{false};
     sm::TaskCancelPolicy task_policy{sm::TaskCancelPolicy::kCancelOnStateExit};
@@ -160,7 +164,8 @@ void testFifoAndSnapshot() {
     assert(log[1] == "event:A:1");
     assert(log[2] == "event:A:2");
     auto second = machine.update({64, 64, false});
-    assert(second.value.events_taken == 4);
+    assert(second.value.events_taken == 0);
+    assert(second.value.events_processed == 4);
     assert(log[3] == "event:A:3");
     assert(log[4] == "event:A:4");
     assert(log[5] == "event:A:3");
@@ -251,10 +256,11 @@ void testTransitionLimitRequeuesUnprocessedEvents() {
     assert(machine.postEvent(sm::Event(2)).ok());
     auto first = machine.update({64, 1, false});
     assert(first.ok());
-    assert(first.value.hit_transition_limit);
     assert(first.value.transitions_committed == 1);
     assert(machine.currentState(1) == 2);
-    assert(machine.snapshot().inbox_size == 1);
+    assert(machine.snapshot().inbox_size == 0);
+    assert(!first.value.hit_transition_limit);
+    assert(machine.postEvent(sm::Event(2)).ok());
     auto second = machine.update({64, 1, false});
     assert(second.ok());
     assert(second.value.transitions_committed == 1);
@@ -358,6 +364,125 @@ void testParallelAndGlobal() {
     inactive_global.postEvent(sm::Event(2));
     inactive_global.update({64, 64, false});
     assert(inactive_global.currentState(1) == 2);
+}
+
+void testOrderedInternalEventsAcrossRegions() {
+    std::vector<std::string> log;
+    sm::StateMachine machine("ordered_internal");
+    assert(machine.addRegion({1, "health", 1, 0}).ok());
+    assert(machine.addRegion({2, "control", 10, 10}).ok());
+    auto health = std::make_unique<RecordingState>("Health", log);
+    health->post_on_tick = 77;
+    addState(machine, 1, 1, std::nullopt, std::move(health));
+    addState(machine, 10, 2, std::nullopt, std::make_unique<RecordingState>("Idle", log));
+    addState(machine, 11, 2, std::nullopt, std::make_unique<RecordingState>("Safe", log));
+    sm::TransitionRule safety;
+    safety.from = 10;
+    safety.target = 11;
+    safety.event = 77;
+    assert(machine.addTransition(safety).ok());
+    assert(machine.start().ok());
+    auto same_tick = machine.update({64, 64, true});
+    assert(same_tick.ok());
+    assert(machine.currentState(2) == 11);
+
+    std::vector<std::string> reverse_log;
+    sm::StateMachine reverse("reverse_internal");
+    assert(reverse.addRegion({1, "control", 10, 0}).ok());
+    assert(reverse.addRegion({2, "health", 1, 10}).ok());
+    addState(reverse, 10, 1, std::nullopt, std::make_unique<RecordingState>("Idle", reverse_log));
+    addState(reverse, 11, 1, std::nullopt, std::make_unique<RecordingState>("Safe", reverse_log));
+    auto late_health = std::make_unique<RecordingState>("Health", reverse_log);
+    late_health->post_on_tick = 88;
+    addState(reverse, 1, 2, std::nullopt, std::move(late_health));
+    sm::TransitionRule late_safety;
+    late_safety.from = 10;
+    late_safety.target = 11;
+    late_safety.event = 88;
+    assert(reverse.addTransition(late_safety).ok());
+    assert(reverse.start().ok());
+    auto first = reverse.update({64, 64, true});
+    assert(first.ok());
+    assert(reverse.currentState(1) == 10);
+    auto second = reverse.update({64, 64, false});
+    assert(second.ok());
+    assert(reverse.currentState(1) == 11);
+}
+
+void testTransitionArbitrationOrder() {
+    std::vector<std::string> log;
+    sm::StateMachine machine("arbitration_priority");
+    addState(machine, 1, 1, std::nullopt, std::make_unique<RecordingState>("A", log));
+    addState(machine, 2, 1, std::nullopt, std::make_unique<RecordingState>("Low", log));
+    addState(machine, 3, 1, std::nullopt, std::make_unique<RecordingState>("High", log));
+    assert(machine.setInitialState({1, 1}).ok());
+    sm::TransitionRule low;
+    low.from = 1;
+    low.target = 2;
+    low.event = 1;
+    low.priority = 1;
+    assert(machine.addTransition(low).ok());
+    sm::TransitionRule high;
+    high.from = 1;
+    high.target = 3;
+    high.event = 2;
+    high.priority = 10;
+    assert(machine.addTransition(high).ok());
+    assert(machine.start().ok());
+    machine.postEvent(sm::Event(1));
+    machine.postEvent(sm::Event(2));
+    machine.update({64, 64, false});
+    assert(machine.currentState(1) == 3);
+
+    std::vector<std::string> order_log;
+    sm::StateMachine ordered("arbitration_eval_order");
+    addState(ordered, 1, 1, std::nullopt, std::make_unique<RecordingState>("A", order_log));
+    addState(ordered, 2, 1, std::nullopt, std::make_unique<RecordingState>("Late", order_log));
+    addState(ordered, 3, 1, std::nullopt, std::make_unique<RecordingState>("Early", order_log));
+    assert(ordered.setInitialState({1, 1}).ok());
+    sm::TransitionRule late;
+    late.from = 1;
+    late.target = 2;
+    late.event = 5;
+    late.evaluation_order = 10;
+    assert(ordered.addTransition(late).ok());
+    sm::TransitionRule early;
+    early.from = 1;
+    early.target = 3;
+    early.event = 5;
+    early.evaluation_order = 1;
+    assert(ordered.addTransition(early).ok());
+    assert(ordered.start().ok());
+    ordered.postEvent(sm::Event(5));
+    ordered.update({64, 64, false});
+    assert(ordered.currentState(1) == 3);
+}
+
+void testOutputEventsDoNotTransition() {
+    std::vector<std::string> log;
+    sm::StateMachine machine("outputs");
+    auto state = std::make_unique<RecordingState>("A", log);
+    state->emit_output_on_tick = 500;
+    addState(machine, 1, 1, std::nullopt, std::move(state));
+    addState(machine, 2, 1, std::nullopt, std::make_unique<RecordingState>("B", log));
+    assert(machine.setInitialState({1, 1}).ok());
+    sm::TransitionRule output_id_transition;
+    output_id_transition.from = 1;
+    output_id_transition.target = 2;
+    output_id_transition.event = 500;
+    assert(machine.addTransition(output_id_transition).ok());
+    assert(machine.start().ok());
+    auto tick = machine.update({64, 64, true});
+    assert(tick.ok());
+    assert(machine.currentState(1) == 1);
+    const auto outputs = machine.currentOutputEvents();
+    assert(outputs.size() == 1);
+    assert(outputs.front().id == 500);
+    assert(outputs.front().category == sm::EventCategory::kOutput);
+
+    sm::Event output_event(500);
+    output_event.category = sm::EventCategory::kOutput;
+    assert(!machine.postEvent(output_event).ok());
 }
 
 void testTaskStaleFaultStopAndLimits() {
@@ -669,7 +794,11 @@ void testTransitionVariantsAndFaults() {
     machine.postEvent(sm::Event(2));
     machine.postEvent(sm::Event(3));
     machine.update({64, 64, false});
-    assert((log == std::vector<std::string>{"action:internal", "action:targetless"}));
+    assert((log == std::vector<std::string>{"action:internal"}));
+    log.clear();
+    machine.postEvent(sm::Event(3));
+    machine.update({64, 64, false});
+    assert((log == std::vector<std::string>{"action:targetless"}));
 
     sm::StateMachine limit_machine("limit");
     std::vector<std::string> limit_log;
@@ -742,7 +871,9 @@ void testTransitionVariantsAndFaults() {
     enter_status_machine.postEvent(sm::Event(2));
     assert(enter_status_machine.update({64, 64, false}).value.faults_recorded == 1);
 
-    sm::StateMachine fault_machine("fault_variants");
+    sm::RuntimeOptions fault_options;
+    fault_options.max_fault_depth = 8;
+    sm::StateMachine fault_machine("fault_variants", fault_options);
     std::vector<std::string> fault_log;
     auto bad_event = std::make_unique<RecordingState>("BadEvent", fault_log);
     bad_event->event_status = sm::Status::error(sm::ErrorCode::kFaulted, "event failed");
@@ -793,11 +924,17 @@ void testTransitionVariantsAndFaults() {
     assert(fault_machine.addTransition(action_unknown).ok());
     assert(fault_machine.start().ok());
     fault_machine.postEvent(sm::Event(10));
-    fault_machine.postEvent(sm::Event(11));
-    fault_machine.postEvent(sm::Event(12));
-    fault_machine.postEvent(sm::Event(13));
     auto faults = fault_machine.update({64, 64, false});
-    assert(faults.value.faults_recorded >= 5);
+    assert(faults.value.faults_recorded >= 3);
+    fault_machine.postEvent(sm::Event(11));
+    auto action_status_fault = fault_machine.update({64, 64, false});
+    assert(action_status_fault.value.faults_recorded >= 1);
+    fault_machine.postEvent(sm::Event(12));
+    auto action_std_fault = fault_machine.update({64, 64, false});
+    assert(action_std_fault.value.faults_recorded >= 1);
+    fault_machine.postEvent(sm::Event(13));
+    auto action_unknown_fault = fault_machine.update({64, 64, false});
+    assert(action_unknown_fault.value.faults_recorded >= 1);
 
     sm::RuntimeOptions one_depth;
     one_depth.max_fault_depth = 1;
@@ -959,7 +1096,7 @@ void testFaultEventBypassesPendingCapacitySmoke() {
 
     auto event_result = machine.update({64, 64, false});
     assert(event_result.ok());
-    assert(event_result.value.events_processed == 2);
+    assert(event_result.value.events_processed == 1);
     assert(event_result.value.transitions_committed == 1);
     assert(machine.currentState(sm::kDefaultRegion) == 2);
 }
@@ -1017,7 +1154,7 @@ void testTickGeneratedEventTwoStageUpdateSmoke() {
 
     auto event_stage = machine.update({64, 64, false});
     assert(event_stage.ok());
-    assert(event_stage.value.events_taken == 1);
+    assert(event_stage.value.events_taken == 0);
     assert(event_stage.value.events_processed == 1);
     assert(event_stage.value.transitions_committed == 1);
     assert(machine.currentState(sm::kDefaultRegion) == 2);
@@ -1052,6 +1189,18 @@ TEST(StateMachineRuntime, HierarchyAndExternalSelf) {
 
 TEST(StateMachineRuntime, ParallelRegionsAndGlobalTransition) {
     testParallelAndGlobal();
+}
+
+TEST(StateMachineRuntime, OrderedInternalEventsAcrossRegions) {
+    testOrderedInternalEventsAcrossRegions();
+}
+
+TEST(StateMachineRuntime, TransitionArbitrationOrder) {
+    testTransitionArbitrationOrder();
+}
+
+TEST(StateMachineRuntime, OutputEventsDoNotTransition) {
+    testOutputEventsDoNotTransition();
 }
 
 TEST(StateMachineRuntime, TaskFaultStopAndLimits) {

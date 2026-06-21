@@ -71,6 +71,7 @@ enum class CallbackKind { kGuard, kAction, kOnEnter, kOnExit, kOnTick, kOnEvent,
 enum class FaultSeverity { kWarning, kError, kFatal };
 enum class TaskStatus { kCompleted, kFailed, kCancelled, kTimeout, kStale };
 enum class TaskCancelPolicy { kKeepRunning, kCancelOnStateExit, kCancelOnRegionExit, kCancelOnMachineStop };
+enum class EventCategory { kInput, kInternal, kOutput };
 
 struct EventTimestamp {
     double seconds{0.0};
@@ -84,8 +85,10 @@ struct Event {
     CorrelationId correlation_id{0};
     EventPayload payload;
     uint64_t sequence{0};
+    EventCategory category{EventCategory::kInput};
     Event() = default;
     explicit Event(EventId event_id) : id(event_id) {}
+    Event(EventId event_id, double event_time) : id(event_id), timestamp(event_time) {}
     Event(EventId event_id, EventTimestamp event_time) : id(event_id), timestamp(event_time.seconds) {}
 };
 
@@ -221,7 +224,8 @@ class StateContext {
     };
 
     StateContext(StateMachine& machine, const Config& config);
-    Status postEvent(Event event);
+    Status postInternalEvent(Event event);
+    Status emitOutput(Event event);
     TimePoint now() const;
     Duration elapsed(StateId state) const;
     Result<TaskHandle> startTask(TaskCancelPolicy policy = TaskCancelPolicy::kCancelOnStateExit,
@@ -260,10 +264,12 @@ struct TransitionRule {
     EventId event{0};
     RegionId region{0};
     int priority{0};
+    int evaluation_order{0};
     TransitionType type{TransitionType::kExternal};
     bool global{false};
     std::function<bool(const GuardContext&)> guard;
     std::function<ActionResult(StateContext&)> action;
+    uint64_t registration_order{0};
 };
 
 struct StateConfig {
@@ -276,6 +282,7 @@ struct RegionConfig {
     RegionId id{kDefaultRegion};
     std::string name;
     StateId initial_state{0};
+    int execution_order{0};
 };
 
 class StateMachine {
@@ -300,6 +307,7 @@ class StateMachine {
     std::vector<EventLogRecord> eventLog() const;
     std::vector<FaultRecord> faultLog() const;
     std::vector<ProcessedEventRecord> currentEvents() const;
+    std::vector<Event> currentOutputEvents() const;
     MachineLifecycle lifecycle() const;
     StateId currentState(RegionId region = kDefaultRegion) const;
     std::string currentStateName(RegionId region = kDefaultRegion) const;

@@ -68,6 +68,12 @@ struct StateMachine::Impl {
     struct RegionEntry {
         RegionConfig config;
         StateId active_leaf{0};
+        uint64_t registration_order{0};
+    };
+
+    struct InternalEventEntry {
+        Event event;
+        size_t first_visible_region_index{0};
     };
 
     struct TaskEntry {
@@ -81,6 +87,7 @@ struct StateMachine::Impl {
     std::shared_ptr<Clock> clock;
     mutable std::mutex inbox_mutex;
     std::deque<Event> inbox;
+    std::deque<Event> pending_internal_events;
     uint64_t next_event_sequence{1};
     size_t generated_events{0};
 
@@ -95,11 +102,17 @@ struct StateMachine::Impl {
     std::vector<RegionId> region_order;
     std::vector<TransitionRule> transitions;
     TransitionId next_transition_id{1};
+    uint64_t next_transition_registration_order{1};
+    uint64_t next_region_registration_order{1};
     TaskId next_task_id{1};
     FaultId next_fault_id{1};
     size_t fault_depth{0};
     std::unordered_map<TaskId, TaskEntry> tasks;
     std::vector<ProcessedEventRecord> current_events;
+    std::vector<Event> current_output_events;
+    std::vector<InternalEventEntry> current_internal_events;
+    bool processing_region{false};
+    size_t current_region_index{0};
     std::deque<EventLogRecord> event_log;
     std::deque<FaultRecord> fault_log;
 
@@ -142,7 +155,19 @@ struct StateMachine::Impl {
 
     void log(const EventLogRecord& record) { pushBounded(event_log, record, options.event_log_capacity); }
 
+    void sortRegionOrder() {
+        std::stable_sort(region_order.begin(), region_order.end(), [&](RegionId lhs, RegionId rhs) {
+            const auto& lhs_region = regions.at(lhs);
+            const auto& rhs_region = regions.at(rhs);
+            if (lhs_region.config.execution_order != rhs_region.config.execution_order) {
+                return lhs_region.config.execution_order < rhs_region.config.execution_order;
+            }
+            return lhs_region.registration_order < rhs_region.registration_order;
+        });
+    }
+
     Status enqueueEvent(Event event, bool bypass_capacity = false) {
+        event.category = EventCategory::kInput;
         std::lock_guard<std::mutex> inbox_lock(inbox_mutex);
         if (!bypass_capacity && options.max_pending_events > 0 && inbox.size() >= options.max_pending_events) {
             EventLogRecord record;
@@ -161,6 +186,26 @@ struct StateMachine::Impl {
         record.event_id = event.id;
         record.message = event.source;
         log(record);
+        return Status{};
+    }
+
+    Status enqueueInternalEvent(Event event) {
+        event.category = EventCategory::kInternal;
+        event.sequence = next_event_sequence++;
+        ++generated_events;
+        if (update_in_progress && processing_region) {
+            current_internal_events.push_back(InternalEventEntry{std::move(event), current_region_index + 1});
+        } else {
+            pending_internal_events.push_back(std::move(event));
+        }
+        return Status{};
+    }
+
+    Status enqueueOutputEvent(Event event) {
+        event.category = EventCategory::kOutput;
+        event.sequence = next_event_sequence++;
+        ++generated_events;
+        current_output_events.push_back(std::move(event));
         return Status{};
     }
 
@@ -334,8 +379,10 @@ Status StateMachine::addRegion(RegionConfig config) {
         return Status::error(ErrorCode::kAlreadyExists, "region already exists");
     }
     RegionId id = config.id;
-    impl_->regions[id] = StateMachine::Impl::RegionEntry{std::move(config), 0};
+    impl_->regions[id] =
+        StateMachine::Impl::RegionEntry{std::move(config), 0, impl_->next_region_registration_order++};
     impl_->region_order.push_back(id);
+    impl_->sortRegionOrder();
     return Status{};
 }
 
@@ -358,8 +405,10 @@ Status StateMachine::addState(StateConfig config, std::unique_ptr<State> state) 
         RegionConfig region;
         region.id = config.region;
         region.name = "region_" + std::to_string(config.region);
-        impl_->regions[config.region] = StateMachine::Impl::RegionEntry{region, 0};
+        impl_->regions[config.region] =
+            StateMachine::Impl::RegionEntry{region, 0, impl_->next_region_registration_order++};
         impl_->region_order.push_back(config.region);
+        impl_->sortRegionOrder();
     }
     impl_->states[config.id] = StateMachine::Impl::StateEntry{config, std::move(state), {}, false};
     return Status{};
@@ -380,6 +429,7 @@ Status StateMachine::addTransition(TransitionRule rule) {
     if (rule.id == 0) {
         rule.id = impl_->next_transition_id++;
     }
+    rule.registration_order = impl_->next_transition_registration_order++;
     if (rule.region == 0) {
         rule.region = impl_->stateRegion(rule.from);
     }
@@ -388,7 +438,10 @@ Status StateMachine::addTransition(TransitionRule rule) {
         if (lhs.priority != rhs.priority) {
             return lhs.priority > rhs.priority;
         }
-        return lhs.id < rhs.id;
+        if (lhs.evaluation_order != rhs.evaluation_order) {
+            return lhs.evaluation_order < rhs.evaluation_order;
+        }
+        return lhs.registration_order < rhs.registration_order;
     });
     return Status{};
 }
@@ -408,8 +461,10 @@ Status StateMachine::setInitialState(StateSelection selection) {
         config.id = selection.region;
         config.name = "region_" + std::to_string(selection.region);
         config.initial_state = selection.state;
-        impl_->regions[selection.region] = StateMachine::Impl::RegionEntry{config, 0};
+        impl_->regions[selection.region] =
+            StateMachine::Impl::RegionEntry{config, 0, impl_->next_region_registration_order++};
         impl_->region_order.push_back(selection.region);
+        impl_->sortRegionOrder();
     }
     auto& entry = impl_->regions[selection.region];
     entry.config.initial_state = selection.state;
@@ -474,6 +529,9 @@ Status StateMachine::stop() {
 
 Status StateMachine::postEvent(Event event) {
     std::lock_guard<std::recursive_mutex> state_lock(impl_->state_mutex);
+    if (event.category != EventCategory::kInput) {
+        return Status::error(ErrorCode::kInvalidArgument, "external postEvent only accepts input events");
+    }
     if (impl_->lifecycle == MachineLifecycle::kConfiguring && !impl_->options.allow_prestart_events) {
         EventLogRecord record;
         record.kind = EventLogRecord::Kind::kEventDropped;
@@ -543,14 +601,15 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
     UpdateResult result;
     size_t generated_before = 0;
     {
-        std::lock_guard<std::mutex> inbox_lock(impl_->inbox_mutex);
+        std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
         generated_before = impl_->generated_events;
     }
     if (options.max_transitions_per_update == 0) {
         options.max_transitions_per_update = 1;
     }
 
-    std::vector<Event> batch;
+    std::vector<Event> input_batch;
+    std::vector<Event> initial_internal_batch;
     {
         std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
         auto owner_status = impl_->ensureOwnerBound();
@@ -585,7 +644,14 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
             return Result<UpdateResult>{result.status, result};
         }
         impl_->update_in_progress = true;
+        impl_->processing_region = false;
         impl_->current_events.clear();
+        impl_->current_output_events.clear();
+        impl_->current_internal_events.clear();
+        while (!impl_->pending_internal_events.empty()) {
+            initial_internal_batch.push_back(std::move(impl_->pending_internal_events.front()));
+            impl_->pending_internal_events.pop_front();
+        }
         ++impl_->update_index;
     }
 
@@ -593,10 +659,10 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         std::lock_guard<std::mutex> inbox_lock(impl_->inbox_mutex);
         const size_t take = std::min(options.max_events_per_update, impl_->inbox.size());
         for (size_t i = 0; i < take; ++i) {
-            batch.push_back(std::move(impl_->inbox.front()));
+            input_batch.push_back(std::move(impl_->inbox.front()));
             impl_->inbox.pop_front();
         }
-        result.events_taken = batch.size();
+        result.events_taken = input_batch.size();
         result.events_remaining = impl_->inbox.size();
         result.hit_event_limit = !impl_->inbox.empty();
     }
@@ -604,258 +670,288 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
     auto finish = [&]() {
         std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
         impl_->update_in_progress = false;
+        impl_->processing_region = false;
         result.lifecycle = impl_->lifecycle;
         return Result<UpdateResult>{result.status, result};
     };
 
-    if (options.run_tick) {
-        std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
-        for (RegionId region_id : impl_->region_order) {
-            auto region_it = impl_->regions.find(region_id);
-            if (region_it == impl_->regions.end() || region_it->second.active_leaf == 0) {
-                continue;
+    auto visible_events_for_region = [&](size_t region_index) {
+        std::vector<const Event*> visible;
+        visible.reserve(input_batch.size() + initial_internal_batch.size() + impl_->current_internal_events.size());
+        for (const auto& event : input_batch) {
+            visible.push_back(&event);
+        }
+        for (const auto& event : initial_internal_batch) {
+            visible.push_back(&event);
+        }
+        for (const auto& entry : impl_->current_internal_events) {
+            if (entry.first_visible_region_index <= region_index) {
+                visible.push_back(&entry.event);
             }
-            StateId leaf = region_it->second.active_leaf;
-            const auto status = impl_->callStateCallback(leaf, region_id, CallbackKind::kOnTick, nullptr,
-                                                         [](State& state, StateContext& ctx) {
-                                                             return state.onTick(ctx);
-                                                         });
+        }
+        std::stable_sort(visible.begin(), visible.end(), [](const Event* lhs, const Event* rhs) {
+            return lhs->sequence < rhs->sequence;
+        });
+        return visible;
+    };
+
+    auto evaluate_guard = [&](TransitionRule& rule, const Event& event) -> bool {
+        if (!rule.guard) {
+            return true;
+        }
+        try {
+            GuardContext ctx(*this, event);
+            return rule.guard(ctx);
+        } catch (const std::exception& ex) {
+            ++result.faults_recorded;
+            impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id, CallbackKind::kGuard,
+                                                              exceptionMessage(ex), typeid(ex).name()));
+            return false;
+        } catch (...) {
+            ++result.faults_recorded;
+            impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id, CallbackKind::kGuard,
+                                                              exceptionMessage()));
+            return false;
+        }
+    };
+
+    auto commit_transition = [&](TransitionRule& rule, RegionId region_id, const Event& event) {
+        StateId from_leaf = impl_->regions[region_id].active_leaf;
+        StateId to_leaf = rule.target.value_or(from_leaf);
+        const bool no_exit_enter =
+            rule.type == TransitionType::kInternal || rule.type == TransitionType::kTargetless;
+        std::vector<StateId> exit_path;
+        std::vector<StateId> enter_path;
+        if (!no_exit_enter) {
+            const auto from_path = impl_->pathToRoot(from_leaf);
+            const auto to_path = impl_->pathToRoot(to_leaf);
+            size_t prefix = rule.type == TransitionType::kExternalSelf && from_leaf == to_leaf
+                                ? from_path.size() - 1
+                                : impl_->commonPrefix(from_path, to_path);
+            for (size_t i = from_path.size(); i > prefix; --i) {
+                exit_path.push_back(from_path[i - 1]);
+            }
+            for (size_t i = prefix; i < to_path.size(); ++i) {
+                enter_path.push_back(to_path[i]);
+            }
+        }
+
+        for (StateId state : exit_path) {
+            impl_->cancelTasksForStateExit(state);
+            auto status = impl_->callStateCallback(state, region_id, CallbackKind::kOnExit, &event,
+                                                   [](State& active_state, StateContext& ctx) {
+                                                       return active_state.onExit(ctx);
+                                                   });
+            impl_->states[state].active = false;
             if (!status.ok()) {
                 ++result.faults_recorded;
             }
         }
-    }
 
-    auto requeue_batch_from = [&](size_t first_unprocessed) {
-        if (first_unprocessed >= batch.size()) {
-            return;
-        }
-        std::lock_guard<std::mutex> inbox_lock(impl_->inbox_mutex);
-        for (size_t i = batch.size(); i > first_unprocessed; --i) {
-            impl_->inbox.push_front(std::move(batch[i - 1]));
-        }
-        result.events_remaining = impl_->inbox.size();
-    };
-
-    for (size_t event_index = 0; event_index < batch.size(); ++event_index) {
-        const auto& event = batch[event_index];
-        if (result.transitions_committed >= options.max_transitions_per_update) {
-            result.hit_transition_limit = true;
-            EventLogRecord record;
-            record.kind = EventLogRecord::Kind::kLimitReached;
-            record.sequence = event.sequence;
-            record.event_id = event.id;
-            record.message = "transition limit reached";
-            impl_->log(record);
-            requeue_batch_from(event_index);
-            break;
-        }
-
-        std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
-        ++result.events_processed;
-
-        struct Candidate {
-            TransitionRule* rule{nullptr};
-            RegionId region{0};
-            StateId from{0};
-        };
-
-        auto evaluate_guard = [&](TransitionRule& rule) -> bool {
-            if (!rule.guard) {
-                return true;
-            }
+        if (rule.action) {
             try {
-                GuardContext ctx(*this, event);
-                return rule.guard(ctx);
+                StateContext ctx(*this, StateContext::Config{{region_id, rule.from}, &event, impl_->generated_events});
+                auto status = rule.action(ctx);
+                if (!status.ok()) {
+                    ++result.faults_recorded;
+                    impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id,
+                                                                      CallbackKind::kAction, status.message));
+                }
             } catch (const std::exception& ex) {
                 ++result.faults_recorded;
-                impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id, CallbackKind::kGuard,
+                impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id, CallbackKind::kAction,
                                                                   exceptionMessage(ex), typeid(ex).name()));
-                return false;
             } catch (...) {
                 ++result.faults_recorded;
-                impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id, CallbackKind::kGuard,
+                impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id, CallbackKind::kAction,
                                                                   exceptionMessage()));
-                return false;
-            }
-        };
-
-        std::vector<Candidate> candidates;
-        for (auto& rule : impl_->transitions) {
-            if (!rule.global || (rule.event != 0 && rule.event != event.id)) {
-                continue;
-            }
-            const RegionId rule_region = rule.region == 0 ? impl_->stateRegion(rule.from) : rule.region;
-            if (!impl_->activeInPath({rule_region, rule.from})) {
-                continue;
-            }
-            if (evaluate_guard(rule)) {
-                candidates.push_back(Candidate{&rule, rule_region, rule.from});
-                break;
             }
         }
 
-        if (candidates.empty()) {
-            for (RegionId region_id : impl_->region_order) {
-                auto region_it = impl_->regions.find(region_id);
-                if (region_it == impl_->regions.end()) {
-                    continue; // LCOV_EXCL_LINE: region_order and regions are mutated together during configuration.
-                }
-                const auto path = impl_->pathToRoot(region_it->second.active_leaf);
-                bool found = false;
-                for (auto state_it = path.rbegin(); state_it != path.rend() && !found; ++state_it) {
-                    for (auto& rule : impl_->transitions) {
-                        if (rule.global || (rule.event != 0 && rule.event != event.id) || rule.from != *state_it) {
-                            continue;
+        if (!no_exit_enter) {
+            if (rule.global) {
+                for (RegionId id : impl_->region_order) {
+                    if (id != region_id) {
+                        auto other_path = impl_->pathToRoot(impl_->regions[id].active_leaf);
+                        for (auto it = other_path.rbegin(); it != other_path.rend(); ++it) {
+                            impl_->cancelTasksForStateExit(*it);
+                            auto status = impl_->callStateCallback(*it, id, CallbackKind::kOnExit, &event,
+                                                                   [](State& active_state, StateContext& ctx) {
+                                                                       return active_state.onExit(ctx);
+                                                                   });
+                            if (!status.ok()) {
+                                ++result.faults_recorded;
+                            }
+                            impl_->states[*it].active = false;
                         }
-                        if (rule.region != 0 && rule.region != region_id) {
-                            continue;
-                        }
-                        if (rule.target && impl_->stateRegion(*rule.target) != region_id) {
-                            continue;
-                        }
-                        if (evaluate_guard(rule)) {
-                            candidates.push_back(Candidate{&rule, region_id, *state_it});
-                            found = true;
-                            break;
-                        }
+                        impl_->cancelTasksForRegionExit(id);
+                        impl_->regions[id].active_leaf = 0;
                     }
                 }
-                if (!found && region_it->second.active_leaf != 0) {
-                    StateId leaf = region_it->second.active_leaf;
-                    auto status = impl_->callStateCallback(leaf, region_id, CallbackKind::kOnEvent, &event,
+            }
+            impl_->regions[region_id].active_leaf = to_leaf;
+            for (StateId state : enter_path) {
+                impl_->states[state].active = true;
+                impl_->states[state].entered_at = impl_->now();
+                auto status = impl_->callStateCallback(state, region_id, CallbackKind::kOnEnter, &event,
+                                                       [](State& active_state, StateContext& ctx) {
+                                                           return active_state.onEnter(ctx);
+                                                       });
+                if (!status.ok()) {
+                    ++result.faults_recorded;
+                }
+            }
+        }
+
+        ++result.transitions_committed;
+        ++result.events_processed;
+        ProcessedEventRecord processed;
+        processed.event = event;
+        processed.triggered_transition = true;
+        processed.region = region_id;
+        processed.from_state = from_leaf;
+        processed.to_state = no_exit_enter ? from_leaf : to_leaf;
+        processed.transition = rule.id;
+        processed.priority = rule.priority;
+        impl_->current_events.push_back(processed);
+
+        EventLogRecord record;
+        record.kind = EventLogRecord::Kind::kTransitionCommitted;
+        record.sequence = event.sequence;
+        record.event_id = event.id;
+        record.region = region_id;
+        record.from_state = from_leaf;
+        record.to_state = processed.to_state;
+        record.transition = rule.id;
+        impl_->log(record);
+    };
+
+    {
+        std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
+        for (size_t region_index = 0; region_index < impl_->region_order.size(); ++region_index) {
+            if (result.transitions_committed >= options.max_transitions_per_update) {
+                result.hit_transition_limit = true;
+                EventLogRecord record;
+                record.kind = EventLogRecord::Kind::kLimitReached;
+                record.message = "transition limit reached";
+                impl_->log(record);
+                break;
+            }
+
+            const RegionId region_id = impl_->region_order[region_index];
+            auto region_it = impl_->regions.find(region_id);
+            if (region_it == impl_->regions.end() || region_it->second.active_leaf == 0) {
+                continue;
+            }
+
+            impl_->processing_region = true;
+            impl_->current_region_index = region_index;
+
+            if (options.run_tick) {
+                StateId leaf = region_it->second.active_leaf;
+                const auto status = impl_->callStateCallback(leaf, region_id, CallbackKind::kOnTick, nullptr,
+                                                             [](State& state, StateContext& ctx) {
+                                                                 return state.onTick(ctx);
+                                                             });
+                if (!status.ok()) {
+                    ++result.faults_recorded;
+                }
+            }
+
+            const auto visible = visible_events_for_region(region_index);
+
+            struct Candidate {
+                TransitionRule* rule{nullptr};
+                const Event* event{nullptr};
+                RegionId region{0};
+                size_t state_depth{0};
+            };
+
+            const auto active_path = impl_->pathToRoot(region_it->second.active_leaf);
+            std::vector<Candidate> candidates;
+            for (const Event* event : visible) {
+                if (!event || event->category == EventCategory::kOutput) {
+                    continue;
+                }
+                for (auto& rule : impl_->transitions) {
+                    if (rule.event != 0 && rule.event != event->id) {
+                        continue;
+                    }
+                    const RegionId rule_region = rule.region == 0 ? impl_->stateRegion(rule.from) : rule.region;
+                    if (rule_region != region_id) {
+                        continue;
+                    }
+                    if (rule.target && impl_->stateRegion(*rule.target) != region_id) {
+                        continue;
+                    }
+                    const auto state_it = std::find(active_path.begin(), active_path.end(), rule.from);
+                    if (state_it == active_path.end()) {
+                        continue;
+                    }
+                    const size_t depth = static_cast<size_t>(std::distance(active_path.begin(), state_it));
+                    candidates.push_back(Candidate{&rule, event, region_id, depth});
+                }
+            }
+
+            std::stable_sort(candidates.begin(), candidates.end(), [](const Candidate& lhs, const Candidate& rhs) {
+                if (lhs.rule->priority != rhs.rule->priority) {
+                    return lhs.rule->priority > rhs.rule->priority;
+                }
+                if (lhs.rule->evaluation_order != rhs.rule->evaluation_order) {
+                    return lhs.rule->evaluation_order < rhs.rule->evaluation_order;
+                }
+                if (lhs.state_depth != rhs.state_depth) {
+                    return lhs.state_depth > rhs.state_depth;
+                }
+                if (lhs.rule->registration_order != rhs.rule->registration_order) {
+                    return lhs.rule->registration_order < rhs.rule->registration_order;
+                }
+                return lhs.event->sequence < rhs.event->sequence;
+            });
+
+            Candidate* selected = nullptr;
+            for (auto& candidate : candidates) {
+                if (evaluate_guard(*candidate.rule, *candidate.event)) {
+                    selected = &candidate;
+                    break;
+                }
+            }
+
+            if (selected) {
+                commit_transition(*selected->rule, selected->region, *selected->event);
+            } else if (region_it->second.active_leaf != 0) {
+                StateId leaf = region_it->second.active_leaf;
+                for (const Event* event : visible) {
+                    if (!event || event->category == EventCategory::kOutput) {
+                        continue;
+                    }
+                    auto status = impl_->callStateCallback(leaf, region_id, CallbackKind::kOnEvent, event,
                                                            [&](State& state, StateContext& ctx) {
-                                                               return state.onEvent(ctx, event);
+                                                               return state.onEvent(ctx, *event);
                                                            });
                     if (!status.ok()) {
                         ++result.faults_recorded;
                     }
+                    ++result.events_processed;
                     ProcessedEventRecord processed;
-                    processed.event = event;
+                    processed.event = *event;
                     processed.region = region_id;
                     processed.from_state = leaf;
                     processed.to_state = leaf;
                     impl_->current_events.push_back(processed);
                 }
             }
+
+            impl_->processing_region = false;
         }
 
-        for (const auto& candidate : candidates) {
-            if (result.transitions_committed >= options.max_transitions_per_update) {
-                result.hit_transition_limit = true;
-                break;
+        const size_t next_tick_index = impl_->region_order.size();
+        for (auto& entry : impl_->current_internal_events) {
+            if (entry.first_visible_region_index >= next_tick_index) {
+                impl_->pending_internal_events.push_back(std::move(entry.event));
             }
-            auto& rule = *candidate.rule;
-            RegionId region_id = candidate.region;
-            StateId from_leaf = impl_->regions[region_id].active_leaf;
-            StateId to_leaf = rule.target.value_or(from_leaf);
-            const bool no_exit_enter =
-                rule.type == TransitionType::kInternal || rule.type == TransitionType::kTargetless;
-            std::vector<StateId> exit_path;
-            std::vector<StateId> enter_path;
-            if (!no_exit_enter) {
-                const auto from_path = impl_->pathToRoot(from_leaf);
-                const auto to_path = impl_->pathToRoot(to_leaf);
-                size_t prefix = rule.type == TransitionType::kExternalSelf && from_leaf == to_leaf
-                                    ? from_path.size() - 1
-                                    : impl_->commonPrefix(from_path, to_path);
-                for (size_t i = from_path.size(); i > prefix; --i) {
-                    exit_path.push_back(from_path[i - 1]);
-                }
-                for (size_t i = prefix; i < to_path.size(); ++i) {
-                    enter_path.push_back(to_path[i]);
-                }
-            }
-
-            for (StateId state : exit_path) {
-                impl_->cancelTasksForStateExit(state);
-                auto status = impl_->callStateCallback(state, region_id, CallbackKind::kOnExit, &event,
-                                                       [](State& active_state, StateContext& ctx) {
-                                                           return active_state.onExit(ctx);
-                                                       });
-                impl_->states[state].active = false;
-                if (!status.ok()) {
-                    ++result.faults_recorded;
-                }
-            }
-
-            if (rule.action) {
-                try {
-                    StateContext ctx(*this,
-                                     StateContext::Config{{region_id, rule.from}, &event, impl_->generated_events});
-                    auto status = rule.action(ctx);
-                    if (!status.ok()) {
-                        ++result.faults_recorded;
-                        impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id,
-                                                                          CallbackKind::kAction, status.message));
-                    }
-                } catch (const std::exception& ex) {
-                    ++result.faults_recorded;
-                    impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id, CallbackKind::kAction,
-                                                                      exceptionMessage(ex), typeid(ex).name()));
-                } catch (...) {
-                    ++result.faults_recorded;
-                    impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id, CallbackKind::kAction,
-                                                                      exceptionMessage()));
-                }
-            }
-
-            if (!no_exit_enter) {
-                if (rule.global) {
-                    for (RegionId id : impl_->region_order) {
-                        if (id != region_id) {
-                            auto other_path = impl_->pathToRoot(impl_->regions[id].active_leaf);
-                            for (auto it = other_path.rbegin(); it != other_path.rend(); ++it) {
-                                impl_->cancelTasksForStateExit(*it);
-                                auto status = impl_->callStateCallback(*it, id, CallbackKind::kOnExit, &event,
-                                                                       [](State& active_state, StateContext& ctx) {
-                                                                           return active_state.onExit(ctx);
-                                                                       });
-                                if (!status.ok()) {
-                                    ++result.faults_recorded;
-                                }
-                                impl_->states[*it].active = false;
-                            }
-                            impl_->cancelTasksForRegionExit(id);
-                            impl_->regions[id].active_leaf = 0;
-                        }
-                    }
-                }
-                impl_->regions[region_id].active_leaf = to_leaf;
-                for (StateId state : enter_path) {
-                    impl_->states[state].active = true;
-                    impl_->states[state].entered_at = impl_->now();
-                    auto status = impl_->callStateCallback(state, region_id, CallbackKind::kOnEnter, &event,
-                                                           [](State& active_state, StateContext& ctx) {
-                                                               return active_state.onEnter(ctx);
-                                                           });
-                    if (!status.ok()) {
-                        ++result.faults_recorded;
-                    }
-                }
-            }
-
-            ++result.transitions_committed;
-            ProcessedEventRecord processed;
-            processed.event = event;
-            processed.triggered_transition = true;
-            processed.region = region_id;
-            processed.from_state = from_leaf;
-            processed.to_state = no_exit_enter ? from_leaf : to_leaf;
-            processed.transition = rule.id;
-            processed.priority = rule.priority;
-            impl_->current_events.push_back(processed);
-
-            EventLogRecord record;
-            record.kind = EventLogRecord::Kind::kTransitionCommitted;
-            record.sequence = event.sequence;
-            record.event_id = event.id;
-            record.region = region_id;
-            record.from_state = from_leaf;
-            record.to_state = processed.to_state;
-            record.transition = rule.id;
-            impl_->log(record);
         }
+        impl_->current_internal_events.clear();
     }
 
     {
@@ -911,6 +1007,7 @@ MachineSnapshot StateMachine::snapshot() const {
         std::lock_guard<std::mutex> inbox_lock(impl_->inbox_mutex);
         snapshot.inbox_size = impl_->inbox.size();
     }
+    snapshot.inbox_size += impl_->pending_internal_events.size();
     for (const auto& region_pair : impl_->regions) {
         snapshot.active_leaf_states[region_pair.first] = region_pair.second.active_leaf;
         snapshot.active_state_paths[region_pair.first] = impl_->pathToRoot(region_pair.second.active_leaf);
@@ -932,6 +1029,11 @@ std::vector<FaultRecord> StateMachine::faultLog() const {
 std::vector<ProcessedEventRecord> StateMachine::currentEvents() const {
     std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
     return impl_->current_events;
+}
+
+std::vector<Event> StateMachine::currentOutputEvents() const {
+    std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
+    return impl_->current_output_events;
 }
 
 MachineLifecycle StateMachine::lifecycle() const {
@@ -977,7 +1079,7 @@ bool StateMachine::isActiveInPath(StateSelection selection) const {
 }
 
 size_t StateMachine::generatedEventCount() const {
-    std::lock_guard<std::mutex> inbox_lock(impl_->inbox_mutex);
+    std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
     return impl_->generated_events;
 }
 
@@ -997,8 +1099,16 @@ StateContext::StateContext(StateMachine& machine, const Config& config)
     : machine_(machine), selection_(config.selection), event_(config.event),
       generated_events_before_(config.generated_events_before) {}
 
-Status StateContext::postEvent(Event event) {
-    return machine_.postEvent(std::move(event));
+Status StateContext::postInternalEvent(Event event) {
+    auto& impl = *machine_.impl_;
+    std::lock_guard<std::recursive_mutex> lock(impl.state_mutex);
+    return impl.enqueueInternalEvent(std::move(event));
+}
+
+Status StateContext::emitOutput(Event event) {
+    auto& impl = *machine_.impl_;
+    std::lock_guard<std::recursive_mutex> lock(impl.state_mutex);
+    return impl.enqueueOutputEvent(std::move(event));
 }
 TimePoint StateContext::now() const {
     return machine_.now();
