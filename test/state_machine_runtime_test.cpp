@@ -1,3 +1,5 @@
+#include <state_machine/runtime/async_task_executor.hpp>
+#include <state_machine/runtime/steady_timer.hpp>
 #include <state_machine/state_machine.hpp>
 
 #include <gtest/gtest.h>
@@ -7,12 +9,17 @@
 #endif
 
 #include <chrono>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
+#include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
 namespace sm = state_machine;
+namespace rt = state_machine::runtime;
 
 namespace {
 
@@ -465,6 +472,61 @@ TEST(StateMachineRuntime, OutputEventsDoNotTriggerTransitions) {
     EXPECT_EQ(machine->currentState(kFlightRegion), kA);
     ASSERT_EQ(machine->currentOutputEvents().size(), 1U);
     EXPECT_EQ(machine->currentOutputEvents().front().category, sm::EventCategory::kOutput);
+}
+
+TEST(RuntimeUtilities, SteadyTimerMeasuresElapsedAndIntervals) {
+    rt::Timer<> timer;
+    EXPECT_FALSE(timer.started());
+    EXPECT_EQ(timer.elapsed().count(), 0.0);
+
+    timer.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    EXPECT_TRUE(timer.started());
+    EXPECT_GT(timer.elapsed().count(), 0.0);
+
+    timer.reset();
+    EXPECT_TRUE(timer.started());
+
+    rt::IntervalTimer<> interval_timer;
+    EXPECT_EQ(interval_timer.interval().count(), 0.0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    EXPECT_GT(interval_timer.interval().count(), 0.0);
+}
+
+TEST(RuntimeUtilities, AsyncTaskExecutorRunsTasksAndCountsFailures) {
+    int context = 0;
+    rt::AsyncTaskExecutor<int> executor(context);
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+
+    executor.start();
+    executor.pushTask(std::make_unique<rt::LambdaTask<int>>("set_context", [&](int& ctx) {
+        std::lock_guard<std::mutex> lock(mutex);
+        ctx = 42;
+        done = true;
+        cv.notify_one();
+    }));
+
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        EXPECT_TRUE(cv.wait_for(lock, std::chrono::seconds(1), [&] {
+            return done;
+        }));
+        EXPECT_EQ(context, 42);
+    }
+
+    executor.pushTask(std::make_unique<rt::LambdaTask<int>>("throwing_task", [](int&) {
+        throw std::runtime_error("boom");
+    }));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (executor.failedCount() == 0u && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    executor.stop();
+    EXPECT_EQ(executor.executedCount(), 1u);
+    EXPECT_EQ(executor.failedCount(), 1u);
 }
 
 TEST(StateMachineRuntime, PureLogicPerformanceSmoke) {
