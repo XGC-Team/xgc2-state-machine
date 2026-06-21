@@ -88,7 +88,6 @@ struct Event {
     EventCategory category{EventCategory::kInput};
     Event() = default;
     explicit Event(EventId event_id) : id(event_id) {}
-    Event(EventId event_id, double event_time) : id(event_id), timestamp(event_time) {}
     Event(EventId event_id, EventTimestamp event_time) : id(event_id), timestamp(event_time.seconds) {}
 };
 
