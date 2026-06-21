@@ -273,6 +273,7 @@ struct TransitionRule {
 
 struct StateConfig {
     StateId id{0};
+    std::string name;
     std::optional<StateId> parent;
     RegionId region{kDefaultRegion};
 };

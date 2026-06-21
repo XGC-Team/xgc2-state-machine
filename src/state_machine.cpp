@@ -900,6 +900,7 @@ Result<std::unique_ptr<StateMachine>> StateMachine::Builder::build() {
 
     for (const StateId id : impl_->state_order) {
         auto& state_def = impl_->states[id];
+        state_def.config.name = state_def.name;
         if (impl_->regions.count(state_def.config.region) == 0) {
             impl_->error("state " + std::to_string(id) + " region is not registered");
         }
@@ -994,6 +995,9 @@ Status StateMachine::addState(StateConfig config, std::unique_ptr<State> state) 
     }
     if (!state || config.id == 0) {
         return Status::error(ErrorCode::kInvalidArgument, "state id and state object are required");
+    }
+    if (config.name.empty()) {
+        config.name = state->name();
     }
     if (impl_->states.count(config.id) > 0) {
         return Status::error(ErrorCode::kAlreadyExists, "state already exists");
@@ -1590,10 +1594,10 @@ std::string StateMachine::currentStateName(RegionId region) const {
         return {};
     }
     const auto state_it = impl_->states.find(active.back());
-    if (state_it == impl_->states.end() || !state_it->second.state) {
+    if (state_it == impl_->states.end()) {
         return {};
     }
-    return state_it->second.state->name();
+    return state_it->second.config.name;
 }
 
 Duration StateMachine::elapsed(StateId state) const {

@@ -237,6 +237,29 @@ TEST(StateMachineRuntime, DefaultExpansionOnParentAndDeepTargets) {
     EXPECT_EQ(direct->currentStatePath(kFlightRegion), (std::vector<sm::StateId>{kNormal, kTakeoff, kTakeoffOffboard}));
 }
 
+TEST(StateMachineRuntime, CurrentStateNameUsesRegisteredStateName) {
+    auto builder = sm::StateMachine::builder("named");
+    builder.region(kFlightRegion)
+        .initial(kA)
+        .state(kA)
+        .name("RegisteredA")
+        .impl(state("ImplA"))
+        .state(kB)
+        .impl(state("ImplB"))
+        .transition()
+        .from(kA)
+        .to(kB)
+        .on(kArbitrate);
+
+    auto machine = requireMachine(builder.build());
+    ASSERT_TRUE(machine->start().ok());
+    EXPECT_EQ(machine->currentStateName(kFlightRegion), "RegisteredA");
+
+    ASSERT_TRUE(machine->postEvent(sm::Event(kArbitrate)).ok());
+    ASSERT_TRUE(machine->update({64, 64, false}).ok());
+    EXPECT_EQ(machine->currentStateName(kFlightRegion), "ImplB");
+}
+
 TEST(StateMachineRuntime, ParentTransitionCoversActiveSubtree) {
     auto machine = buildFlightLikeMachine();
     ASSERT_TRUE(machine->start().ok());
