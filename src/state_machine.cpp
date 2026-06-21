@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <deque>
 #include <exception>
+#include <iterator>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -379,8 +380,7 @@ Status StateMachine::addRegion(RegionConfig config) {
         return Status::error(ErrorCode::kAlreadyExists, "region already exists");
     }
     RegionId id = config.id;
-    impl_->regions[id] =
-        StateMachine::Impl::RegionEntry{std::move(config), 0, impl_->next_region_registration_order++};
+    impl_->regions[id] = StateMachine::Impl::RegionEntry{std::move(config), 0, impl_->next_region_registration_order++};
     impl_->region_order.push_back(id);
     impl_->sortRegionOrder();
     return Status{};
@@ -678,12 +678,13 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
     auto visible_events_for_region = [&](size_t region_index) {
         std::vector<const Event*> visible;
         visible.reserve(input_batch.size() + initial_internal_batch.size() + impl_->current_internal_events.size());
-        for (const auto& event : input_batch) {
-            visible.push_back(&event);
-        }
-        for (const auto& event : initial_internal_batch) {
-            visible.push_back(&event);
-        }
+        std::transform(input_batch.begin(), input_batch.end(), std::back_inserter(visible), [](const Event& event) {
+            return &event;
+        });
+        std::transform(initial_internal_batch.begin(), initial_internal_batch.end(), std::back_inserter(visible),
+                       [](const Event& event) {
+                           return &event;
+                       });
         for (const auto& entry : impl_->current_internal_events) {
             if (entry.first_visible_region_index <= region_index) {
                 visible.push_back(&entry.event);
@@ -709,8 +710,8 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
             return false;
         } catch (...) {
             ++result.faults_recorded;
-            impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id, CallbackKind::kGuard,
-                                                              exceptionMessage()));
+            impl_->recordFault(
+                StateMachine::Impl::faultInput(&event, rule.from, rule.id, CallbackKind::kGuard, exceptionMessage()));
             return false;
         }
     };
@@ -718,8 +719,7 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
     auto commit_transition = [&](TransitionRule& rule, RegionId region_id, const Event& event) {
         StateId from_leaf = impl_->regions[region_id].active_leaf;
         StateId to_leaf = rule.target.value_or(from_leaf);
-        const bool no_exit_enter =
-            rule.type == TransitionType::kInternal || rule.type == TransitionType::kTargetless;
+        const bool no_exit_enter = rule.type == TransitionType::kInternal || rule.type == TransitionType::kTargetless;
         std::vector<StateId> exit_path;
         std::vector<StateId> enter_path;
         if (!no_exit_enter) {
@@ -754,8 +754,8 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                 auto status = rule.action(ctx);
                 if (!status.ok()) {
                     ++result.faults_recorded;
-                    impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id,
-                                                                      CallbackKind::kAction, status.message));
+                    impl_->recordFault(StateMachine::Impl::faultInput(&event, rule.from, rule.id, CallbackKind::kAction,
+                                                                      status.message));
                 }
             } catch (const std::exception& ex) {
                 ++result.faults_recorded;
