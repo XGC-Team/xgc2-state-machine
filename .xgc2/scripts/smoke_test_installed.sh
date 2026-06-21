@@ -52,20 +52,24 @@ int main()
   auto ready = std::make_unique<ReadyState>();
   auto* ready_ptr = ready.get();
 
-  state_machine::StateMachine machine("probe");
-  if (!machine.addState({1}, std::move(ready)).ok()) {
+  auto builder = state_machine::StateMachine::builder("probe");
+  auto result = builder.region(state_machine::kDefaultRegion)
+                    .initial(1)
+                    .state(1)
+                    .impl(std::move(ready))
+                    .endRegion()
+                    .build();
+  if (!result.status.ok()) {
     return 1;
   }
-  if (!machine.setInitialState({state_machine::kDefaultRegion, 1}).ok()) {
-    return 1;
-  }
-  if (!machine.start().ok()) {
+  auto machine = std::move(result.value);
+  if (!machine->start().ok()) {
     return 1;
   }
   if (!ready_ptr->entered) {
     return 1;
   }
-  return machine.currentState() == 1 ? 0 : 1;
+  return machine->currentState() == 1 ? 0 : 1;
 }
 CPP
 
