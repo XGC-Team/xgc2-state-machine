@@ -108,6 +108,12 @@ std::unique_ptr<RecordingState> state(std::string name, std::vector<std::string>
     return std::make_unique<RecordingState>(std::move(name), log);
 }
 
+std::unique_ptr<RecordingState> tickPostingState(std::string name, sm::EventId event_id) {
+    auto recording_state = state(std::move(name));
+    recording_state->internal_on_tick = event_id;
+    return recording_state;
+}
+
 std::unique_ptr<sm::StateMachine> requireMachine(sm::Result<std::unique_ptr<sm::StateMachine>> result) {
     EXPECT_TRUE(result.ok()) << result.status.message;
     return std::move(result.value);
@@ -308,6 +314,27 @@ TEST(StateMachineRuntime, EarlierRegionInternalEventIsVisibleInSameTick) {
     auto result = machine->update({64, 64, true});
     ASSERT_TRUE(result.ok()) << result.status.message;
     EXPECT_EQ(machine->currentState(kFlightRegion), kLanding);
+}
+
+TEST(StateMachineRuntime, SameRegionInternalEventFromTickCanTriggerTransition) {
+    auto builder = sm::StateMachine::builder("same_region_tick_event");
+    builder.region(kFlightRegion)
+        .initial(kTakeoffInit)
+        .state(kTakeoffInit)
+        .impl(tickPostingState("TakeoffInit", kArbitrate))
+        .state(kTakeoffOffboard)
+        .impl(state("TakeoffOffboard"))
+        .endRegion()
+        .transition()
+        .from(kTakeoffInit)
+        .to(kTakeoffOffboard)
+        .on(kArbitrate);
+
+    auto machine = requireMachine(builder.build());
+    ASSERT_TRUE(machine->start().ok());
+    auto result = machine->update({64, 64, true});
+    ASSERT_TRUE(result.ok()) << result.status.message;
+    EXPECT_EQ(machine->currentState(kFlightRegion), kTakeoffOffboard);
 }
 
 TEST(StateMachineRuntime, LaterRegionInternalEventWaitsUntilNextTick) {

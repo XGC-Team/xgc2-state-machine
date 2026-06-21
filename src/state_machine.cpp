@@ -87,6 +87,7 @@ struct StateMachine::Impl {
     struct InternalEventEntry {
         Event event;
         size_t first_visible_region_index{0};
+        size_t producer_region_index{0};
     };
 
     struct TaskEntry {
@@ -126,6 +127,7 @@ struct StateMachine::Impl {
     std::vector<InternalEventEntry> current_internal_events;
     bool processing_region{false};
     size_t current_region_index{0};
+    size_t internal_event_first_visible_region_index{0};
     std::deque<EventLogRecord> event_log;
     std::deque<FaultRecord> fault_log;
     StateMachine* machine{nullptr};
@@ -474,7 +476,8 @@ struct StateMachine::Impl {
         event.sequence = next_event_sequence++;
         ++generated_events;
         if (update_in_progress && processing_region) {
-            current_internal_events.push_back(InternalEventEntry{std::move(event), current_region_index + 1});
+            current_internal_events.push_back(
+                InternalEventEntry{std::move(event), internal_event_first_visible_region_index, current_region_index});
         } else {
             pending_internal_events.push_back(std::move(event));
         }
@@ -1246,6 +1249,7 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         result.lifecycle = impl_->lifecycle;
         return Result<UpdateResult>{result.status, result};
     };
+    std::set<uint64_t> consumed_internal_sequences;
 
     auto visible_events_for_region = [&](size_t region_index) {
         std::vector<const Event*> visible;
@@ -1362,6 +1366,9 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         ++result.transitions_committed;
         if (event) {
             ++result.events_processed;
+            if (event->category == EventCategory::kInternal) {
+                consumed_internal_sequences.insert(event->sequence);
+            }
         }
         ProcessedEventRecord processed;
         if (event) {
@@ -1412,9 +1419,11 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
 
             impl_->processing_region = true;
             impl_->current_region_index = region_index;
+            impl_->internal_event_first_visible_region_index = region_index + 1;
 
             if (options.run_tick) {
                 const auto active_for_tick = impl_->activeStatesInRegion(region_id);
+                impl_->internal_event_first_visible_region_index = region_index;
                 for (StateId state : active_for_tick) {
                     const auto status = impl_->callStateCallback(state, CallbackKind::kOnTick, nullptr,
                                                                  [](State& active_state, StateContext& ctx) {
@@ -1424,6 +1433,7 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                         ++result.faults_recorded;
                     }
                 }
+                impl_->internal_event_first_visible_region_index = region_index + 1;
             }
 
             const auto visible = visible_events_for_region(region_index);
@@ -1491,7 +1501,9 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
 
         const size_t next_tick_index = top_regions.size();
         for (auto& entry : impl_->current_internal_events) {
-            if (entry.first_visible_region_index >= next_tick_index) {
+            const bool event_consumed = consumed_internal_sequences.count(entry.event.sequence) != 0;
+            if (!event_consumed &&
+                (entry.first_visible_region_index >= next_tick_index || entry.producer_region_index > 0)) {
                 impl_->pending_internal_events.push_back(std::move(entry.event));
             }
         }
