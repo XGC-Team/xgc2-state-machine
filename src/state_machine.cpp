@@ -623,21 +623,17 @@ struct StateMachine::Builder::Impl {
     }
 
     StateId currentState() const {
-        for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
-            if (it->kind == ScopeKind::kState) {
-                return it->state;
-            }
-        }
-        return 0;
+        const auto it = std::find_if(scopes.rbegin(), scopes.rend(), [](const Scope& scope) {
+            return scope.kind == ScopeKind::kState;
+        });
+        return it == scopes.rend() ? 0 : it->state;
     }
 
     RegionId currentRegion() const {
-        for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
-            if (it->kind == ScopeKind::kRegion) {
-                return it->region;
-            }
-        }
-        return 0;
+        const auto it = std::find_if(scopes.rbegin(), scopes.rend(), [](const Scope& scope) {
+            return scope.kind == ScopeKind::kRegion;
+        });
+        return it == scopes.rend() ? 0 : it->region;
     }
 
     std::optional<StateId> ownerOfRegion(RegionId region) const {
@@ -884,46 +880,46 @@ Result<std::unique_ptr<StateMachine>> StateMachine::Builder::build() {
     }
 
     for (const auto& region_pair : impl_->regions) {
-        const auto& region = region_pair.second.config;
-        if (region.initial_state == 0) {
-            impl_->error("region " + std::to_string(region.id) + " is missing an initial state");
+        const auto& region_config = region_pair.second.config;
+        if (region_config.initial_state == 0) {
+            impl_->error("region " + std::to_string(region_config.id) + " is missing an initial state");
             continue;
         }
-        const auto state_it = impl_->states.find(region.initial_state);
+        const auto state_it = impl_->states.find(region_config.initial_state);
         if (state_it == impl_->states.end()) {
-            impl_->error("region " + std::to_string(region.id) + " initial state is not registered");
+            impl_->error("region " + std::to_string(region_config.id) + " initial state is not registered");
             continue;
         }
-        if (state_it->second.config.region != region.id) {
-            impl_->error("region " + std::to_string(region.id) + " initial state is not a direct child");
+        if (state_it->second.config.region != region_config.id) {
+            impl_->error("region " + std::to_string(region_config.id) + " initial state is not a direct child");
         }
-        if (region.owner_state && impl_->states.count(*region.owner_state) == 0) {
-            impl_->error("region " + std::to_string(region.id) + " owner state is not registered");
+        if (region_config.owner_state && impl_->states.count(*region_config.owner_state) == 0) {
+            impl_->error("region " + std::to_string(region_config.id) + " owner state is not registered");
         }
     }
 
     for (const StateId id : impl_->state_order) {
-        auto& state = impl_->states[id];
-        if (impl_->regions.count(state.config.region) == 0) {
+        auto& state_def = impl_->states[id];
+        if (impl_->regions.count(state_def.config.region) == 0) {
             impl_->error("state " + std::to_string(id) + " region is not registered");
         }
-        if (state.config.parent && impl_->states.count(*state.config.parent) == 0) {
+        if (state_def.config.parent && impl_->states.count(*state_def.config.parent) == 0) {
             impl_->error("state " + std::to_string(id) + " parent is not registered");
         }
-        if (!state.state) {
-            state.state = std::make_unique<PassiveState>(state.name);
+        if (!state_def.state) {
+            state_def.state = std::make_unique<PassiveState>(state_def.name);
         }
     }
 
-    for (auto& transition : impl_->transitions) {
-        if (transition.from == 0 || impl_->states.count(transition.from) == 0) {
+    for (const auto& rule : impl_->transitions) {
+        if (rule.from == 0 || impl_->states.count(rule.from) == 0) {
             impl_->error("transition source state is not registered");
             continue;
         }
-        if (!transition.event && !transition.guard) {
+        if (!rule.event && !rule.guard) {
             impl_->error("condition-only transition requires when(guard)");
         }
-        if (transition.target && impl_->states.count(*transition.target) == 0) {
+        if (rule.target && impl_->states.count(*rule.target) == 0) {
             impl_->error("transition target state is not registered");
         }
     }
@@ -945,8 +941,8 @@ Result<std::unique_ptr<StateMachine>> StateMachine::Builder::build() {
             return Result<std::unique_ptr<StateMachine>>{status, nullptr};
         }
     }
-    for (auto& transition : impl_->transitions) {
-        auto status = machine->addTransition(std::move(transition));
+    for (auto& rule : impl_->transitions) {
+        auto status = machine->addTransition(std::move(rule));
         if (!status.ok()) {
             return Result<std::unique_ptr<StateMachine>>{status, nullptr};
         }

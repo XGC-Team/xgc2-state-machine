@@ -249,14 +249,17 @@ TEST(StateMachineRuntime, ParentTransitionCoversActiveSubtree) {
 }
 
 TEST(StateMachineRuntime, EarlierRegionInternalEventIsVisibleInSameTick) {
-    auto health = state("Health");
-    health->internal_on_tick = kSafety;
+    auto healthState = [] {
+        auto health = state("Health");
+        health->internal_on_tick = kSafety;
+        return health;
+    };
     auto builder = sm::StateMachine::builder("ordered");
     builder.region(kHealthRegion)
         .order(0)
         .initial(kHealth)
         .state(kHealth)
-        .impl(std::move(health))
+        .impl(healthState())
         .endRegion()
         .region(kFlightRegion)
         .order(10)
@@ -278,8 +281,11 @@ TEST(StateMachineRuntime, EarlierRegionInternalEventIsVisibleInSameTick) {
 }
 
 TEST(StateMachineRuntime, LaterRegionInternalEventWaitsUntilNextTick) {
-    auto health = state("Health");
-    health->internal_on_tick = kSafety;
+    auto healthState = [] {
+        auto health = state("Health");
+        health->internal_on_tick = kSafety;
+        return health;
+    };
     auto builder = sm::StateMachine::builder("reverse");
     builder.region(kFlightRegion)
         .order(0)
@@ -293,7 +299,7 @@ TEST(StateMachineRuntime, LaterRegionInternalEventWaitsUntilNextTick) {
         .order(10)
         .initial(kHealth)
         .state(kHealth)
-        .impl(std::move(health))
+        .impl(healthState())
         .endRegion()
         .transition()
         .from(kReady)
@@ -435,13 +441,16 @@ TEST(StateMachineRuntime, ConditionOnlyTransitionRunsOncePerTick) {
 }
 
 TEST(StateMachineRuntime, OutputEventsDoNotTriggerTransitions) {
-    auto active = state("A");
-    active->output_on_tick = kOutputOnly;
+    auto activeState = [] {
+        auto active = state("A");
+        active->output_on_tick = kOutputOnly;
+        return active;
+    };
     auto builder = sm::StateMachine::builder("output");
     builder.region(kFlightRegion)
         .initial(kA)
         .state(kA)
-        .impl(std::move(active))
+        .impl(activeState())
         .state(kB)
         .impl(state("B"))
         .endRegion()
