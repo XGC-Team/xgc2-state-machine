@@ -6,7 +6,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
 
 package_name="libxgc2-state-machine-dev"
-package_base_version="${PACKAGE_BASE_VERSION:-0.1.0-2}"
+package_base_version="${PACKAGE_BASE_VERSION:-0.1.1-1}"
 package_distribution="${PACKAGE_DISTRIBUTION:-${APT_REPO_DISTRIBUTION:-}}"
 build_dir="${XGC2_STATE_MACHINE_BUILD_DIR:-${repo_root}/.ci/build}"
 stage_dir="${XGC2_STATE_MACHINE_STAGE_DIR:-${repo_root}/.ci/stage}"
