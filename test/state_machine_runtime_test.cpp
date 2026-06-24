@@ -1,4 +1,5 @@
 #include <state_machine/runtime/async_task_executor.hpp>
+#include <state_machine/runtime/event_dispatcher.hpp>
 #include <state_machine/runtime/steady_timer.hpp>
 #include <state_machine/state_machine.hpp>
 
@@ -577,6 +578,71 @@ TEST(RuntimeUtilities, AsyncTaskExecutorRunsTasksAndCountsFailures) {
     executor.stop();
     EXPECT_EQ(executor.executedCount(), 1u);
     EXPECT_EQ(executor.failedCount(), 1u);
+}
+
+TEST(RuntimeUtilities, EventDispatcherDispatchesInOrderAndIgnoresNullConsumers) {
+    class RecordingConsumer final : public rt::EventConsumer {
+      public:
+        RecordingConsumer(std::string consumer_name, sm::EventId handled_id, std::vector<std::string>& calls)
+            : consumer_name_(std::move(consumer_name)), handled_id_(handled_id), calls_(calls) {}
+
+        std::string name() const override { return consumer_name_; }
+
+        bool handle(const sm::Event& event) override {
+            calls_.push_back(consumer_name_);
+            return event.id == handled_id_;
+        }
+
+      private:
+        std::string consumer_name_;
+        sm::EventId handled_id_;
+        std::vector<std::string>& calls_;
+    };
+
+    std::vector<std::string> calls;
+    rt::EventDispatcher dispatcher;
+    dispatcher.addConsumer(nullptr);
+    dispatcher.addConsumer(std::make_unique<RecordingConsumer>("first", 42, calls));
+    dispatcher.addConsumer(std::make_unique<RecordingConsumer>("second", 42, calls));
+
+    const auto result = dispatcher.dispatch({sm::Event(42)});
+
+    ASSERT_EQ(calls.size(), 1u);
+    EXPECT_EQ(calls.front(), "first");
+    EXPECT_EQ(result.events_total, 1u);
+    EXPECT_EQ(result.events_handled, 1u);
+    EXPECT_EQ(result.events_unhandled, 0u);
+    EXPECT_EQ(result.consumer_failures, 0u);
+}
+
+TEST(RuntimeUtilities, EventDispatcherReportsUnhandledAndConsumerFailures) {
+    class ThrowingConsumer final : public rt::EventConsumer {
+      public:
+        std::string name() const override { return "throwing"; }
+        bool handle(const sm::Event&) override { throw std::runtime_error("consumer failed"); }
+    };
+
+    class SelectiveConsumer final : public rt::EventConsumer {
+      public:
+        std::string name() const override { return "selective"; }
+        bool handle(const sm::Event& event) override { return event.id == 7; }
+    };
+
+    rt::EventDispatcher dispatcher;
+    dispatcher.addConsumer(std::make_unique<ThrowingConsumer>());
+    dispatcher.addConsumer(std::make_unique<SelectiveConsumer>());
+
+    const auto result = dispatcher.dispatch({sm::Event(7), sm::Event(8)});
+
+    EXPECT_EQ(result.events_total, 2u);
+    EXPECT_EQ(result.events_handled, 1u);
+    EXPECT_EQ(result.events_unhandled, 1u);
+    ASSERT_EQ(result.unhandled_events.size(), 1u);
+    EXPECT_EQ(result.unhandled_events.front().id, 8u);
+    EXPECT_EQ(result.consumer_failures, 2u);
+    ASSERT_EQ(result.failures.size(), 2u);
+    EXPECT_EQ(result.failures.front().consumer_name, "throwing");
+    EXPECT_EQ(result.failures.front().message, "consumer failed");
 }
 
 TEST(StateMachineRuntime, PureLogicPerformanceSmoke) {

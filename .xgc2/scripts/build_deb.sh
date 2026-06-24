@@ -6,7 +6,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
 
 package_name="libxgc2-state-machine-dev"
-package_base_version="${PACKAGE_BASE_VERSION:-0.1.1-1}"
+package_base_version="${PACKAGE_BASE_VERSION:-0.1.2-1}"
 package_distribution="${PACKAGE_DISTRIBUTION:-${APT_REPO_DISTRIBUTION:-}}"
 build_dir="${XGC2_STATE_MACHINE_BUILD_DIR:-${repo_root}/.ci/build}"
 stage_dir="${XGC2_STATE_MACHINE_STAGE_DIR:-${repo_root}/.ci/stage}"
@@ -93,6 +93,7 @@ chmod 0755 "${pkg_root}/DEBIAN/postinst" "${pkg_root}/DEBIAN/postrm"
 cp -a "${repo_root}/README.md" "${pkg_root}/usr/share/doc/${package_name}/"
 
 test -f "${pkg_root}/usr/include/state_machine/state_machine.hpp"
+test -f "${pkg_root}/usr/include/state_machine/runtime/event_dispatcher.hpp"
 test -f "${pkg_root}/usr/lib/${multiarch}/libxgc2_state_machine.so"
 test -f "${pkg_root}/usr/lib/${multiarch}/cmake/xgc2_state_machine/xgc2_state_machineConfig.cmake"
 

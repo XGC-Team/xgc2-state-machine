@@ -33,6 +33,7 @@ required_files=(
   CMakeLists.txt
   cmake/xgc2_state_machineConfig.cmake.in
   include/state_machine/state_machine.hpp
+  include/state_machine/runtime/event_dispatcher.hpp
   src/state_machine.cpp
   test/state_machine_runtime_test.cpp
   .github/workflows/ci.yml
