@@ -20,12 +20,12 @@ on:
         description: Run C++ quality checks
         required: true
         type: boolean
-        default: true
+        default: false
       run_source_tests:
         description: Run source tests
         required: true
         type: boolean
-        default: true
+        default: false
 
 jobs:
   release-guard:

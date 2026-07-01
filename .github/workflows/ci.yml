@@ -38,7 +38,6 @@ jobs:
           ./.xgc2/scripts/check_cpp_quality.sh
 
   package-compliance:
-    needs: cpp-quality
     runs-on: ubuntu-latest
     defaults:
       run:
