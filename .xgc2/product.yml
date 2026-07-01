@@ -1,44 +1,47 @@
 schema: xgc2.product.v1
 id: libxgc2-state-machine-dev
 name: XGC2 State Machine
-version: 0.1.2-1
+version: 0.1.2-2
 kind: toolchain-apt
-summary: System-level deterministic C++ state machine development library for XGC2 controllers, planners, and runtime workflows.
-
+summary: System-level deterministic C++ state machine development library for XGC2
+  controllers, planners, and runtime workflows.
 apt:
   distribution: focal,jammy,noble
   install:
-    - libxgc2-state-machine-dev
+  - libxgc2-state-machine-dev
   packages:
-    - libxgc2-state-machine-dev
+  - libxgc2-state-machine-dev
   depends:
-    - libc6
-    - libgcc-s1
-    - libstdc++6
-
+  - libc6
+  - libgcc-s1
+  - libstdc++6
 usage:
-  install: |
-    sudo apt update
+  install: 'sudo apt update
+
     sudo apt install libxgc2-state-machine-dev
-  smoke_test: |
-    cmake --find-package -DNAME=xgc2_state_machine -DCOMPILER_ID=GNU -DLANGUAGE=CXX -DMODE=EXIST
-  notes: |
-    CMake consumers should use find_package(xgc2_state_machine REQUIRED CONFIG)
+
+    '
+  smoke_test: 'cmake --find-package -DNAME=xgc2_state_machine -DCOMPILER_ID=GNU -DLANGUAGE=CXX
+    -DMODE=EXIST
+
+    '
+  notes: 'CMake consumers should use find_package(xgc2_state_machine REQUIRED CONFIG)
+
     and link xgc2_state_machine::state_machine. The public include path remains
+
     <state_machine/state_machine.hpp>.
 
+    '
 release:
   apt_versions:
-    focal: 0.1.2-1~focal
-    jammy: 0.1.2-1~jammy
-    noble: 0.1.2-1~noble
-
+    focal: 0.1.2-2~focal
+    jammy: 0.1.2-2~jammy
+    noble: 0.1.2-2~noble
 ownership:
   paths:
-    - /usr/include/state_machine
-    - /usr/lib/*/libxgc2_state_machine.so*
-    - /usr/lib/*/cmake/xgc2_state_machine
-
+  - /usr/include/state_machine
+  - /usr/lib/*/libxgc2_state_machine.so*
+  - /usr/lib/*/cmake/xgc2_state_machine
 conflicts:
   apt_packages:
-    - ros-noetic-xgc2-state-machine
+  - ros-noetic-xgc2-state-machine
