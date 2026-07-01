@@ -111,7 +111,7 @@ jobs:
         run: echo "Source tests run as part of the deb build smoke test for libxgc2-state-machine-dev."
 
   deb-build-and-smoke:
-    needs: package-compliance
+    needs: release-guard
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
