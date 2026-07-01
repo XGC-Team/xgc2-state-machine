@@ -6,7 +6,6 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
 
 package_name="libxgc2-state-machine-dev"
-package_base_version="${PACKAGE_BASE_VERSION:-0.1.2-1}"
 package_distribution="${PACKAGE_DISTRIBUTION:-${APT_REPO_DISTRIBUTION:-}}"
 build_dir="${XGC2_STATE_MACHINE_BUILD_DIR:-${repo_root}/.ci/build}"
 stage_dir="${XGC2_STATE_MACHINE_STAGE_DIR:-${repo_root}/.ci/stage}"
@@ -14,6 +13,16 @@ output_dir="${XGC2_STATE_MACHINE_DEB_OUTPUT_DIR:-${repo_root}/.ci/debs}"
 pkg_root="${repo_root}/.ci/pkg/${package_name}"
 arch="$(dpkg --print-architecture)"
 multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
+
+product_version() {
+  awk -F': *' '/^version:[[:space:]]*/ {print $2; exit}' "${repo_root}/.xgc2/product.yml"
+}
+
+package_base_version="${PACKAGE_BASE_VERSION:-$(product_version)}"
+if [[ -z "${package_base_version}" ]]; then
+  echo "package version is missing; set PACKAGE_BASE_VERSION or .xgc2/product.yml version" >&2
+  exit 1
+fi
 
 if [[ -z "${package_distribution}" && -r /etc/os-release ]]; then
   # shellcheck disable=SC1091
