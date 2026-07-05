@@ -103,6 +103,8 @@ cp -a "${repo_root}/README.md" "${pkg_root}/usr/share/doc/${package_name}/"
 
 test -f "${pkg_root}/usr/include/state_machine/state_machine.hpp"
 test -f "${pkg_root}/usr/include/state_machine/runtime/event_dispatcher.hpp"
+test -f "${pkg_root}/usr/include/state_machine/runtime/event_post.hpp"
+test -f "${pkg_root}/usr/include/state_machine/runtime/event_time.hpp"
 test -f "${pkg_root}/usr/lib/${multiarch}/libxgc2_state_machine.so"
 test -f "${pkg_root}/usr/lib/${multiarch}/cmake/xgc2_state_machine/xgc2_state_machineConfig.cmake"
 

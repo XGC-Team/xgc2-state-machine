@@ -7,6 +7,8 @@ dpkg -s libxgc2-state-machine-dev >/dev/null
 multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
 test -f /usr/include/state_machine/state_machine.hpp
 test -f /usr/include/state_machine/runtime/event_dispatcher.hpp
+test -f /usr/include/state_machine/runtime/event_post.hpp
+test -f /usr/include/state_machine/runtime/event_time.hpp
 test -f "/usr/lib/${multiarch}/libxgc2_state_machine.so"
 test -f "/usr/lib/${multiarch}/cmake/xgc2_state_machine/xgc2_state_machineConfig.cmake"
 
@@ -33,6 +35,8 @@ CMAKE
 cat > "${probe_dir}/link_probe.cpp" <<'CPP'
 #include <state_machine/state_machine.hpp>
 #include <state_machine/runtime/event_dispatcher.hpp>
+#include <state_machine/runtime/event_post.hpp>
+#include <state_machine/runtime/event_time.hpp>
 
 #include <memory>
 
@@ -68,7 +72,15 @@ int main()
   if (!machine->start().ok()) {
     return 1;
   }
+  const auto update_result = machine->update();
+  if (!update_result.ok() || !machine->currentTrace().empty()) {
+    return 1;
+  }
   if (!ready_ptr->entered) {
+    return 1;
+  }
+  const state_machine::Event unstamped(7);
+  if (state_machine::runtime::eventTimestampOr(unstamped, 2.0) != 2.0) {
     return 1;
   }
   class ProbeConsumer final : public state_machine::runtime::EventConsumer {

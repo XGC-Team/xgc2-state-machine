@@ -188,6 +188,26 @@ struct ProcessedEventRecord {
     int priority{0};
 };
 
+struct EventTraceRecord {
+    enum class Kind {
+        kInternalEventGenerated,
+        kOutputEventGenerated,
+        kEventConsumed,
+        kTransitionCommitted,
+        kInternalEventDeferred,
+    };
+
+    Kind kind{Kind::kEventConsumed};
+    Event event;
+    RegionId producer_region{0};
+    StateId producer_state{0};
+    RegionId consumer_region{0};
+    StateId from_state{0};
+    StateId to_state{0};
+    std::optional<TransitionId> transition;
+    int priority{0};
+};
+
 class Clock {
   public:
     virtual ~Clock() = default;
@@ -344,6 +364,7 @@ class StateMachine {
     std::vector<EventLogRecord> eventLog() const;
     std::vector<FaultRecord> faultLog() const;
     std::vector<ProcessedEventRecord> currentEvents() const;
+    std::vector<EventTraceRecord> currentTrace() const;
     std::vector<Event> currentOutputEvents() const;
     MachineLifecycle lifecycle() const;
     StateId currentState(RegionId region = kDefaultRegion) const;

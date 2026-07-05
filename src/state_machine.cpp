@@ -86,6 +86,8 @@ struct StateMachine::Impl {
 
     struct InternalEventEntry {
         Event event;
+        RegionId producer_region{0};
+        StateId producer_state{0};
         size_t first_visible_region_index{0};
         size_t producer_region_index{0};
     };
@@ -123,6 +125,7 @@ struct StateMachine::Impl {
     size_t fault_depth{0};
     std::unordered_map<TaskId, TaskEntry> tasks;
     std::vector<ProcessedEventRecord> current_events;
+    std::vector<EventTraceRecord> current_trace;
     std::vector<Event> current_output_events;
     std::vector<InternalEventEntry> current_internal_events;
     bool processing_region{false};
@@ -471,23 +474,36 @@ struct StateMachine::Impl {
         return Status{};
     }
 
-    Status enqueueInternalEvent(Event event) {
+    Status enqueueInternalEvent(Event event, StateSelection producer) {
         event.category = EventCategory::kInternal;
         event.sequence = next_event_sequence++;
         ++generated_events;
+        EventTraceRecord trace;
+        trace.kind = EventTraceRecord::Kind::kInternalEventGenerated;
+        trace.event = event;
+        trace.producer_region = producer.region;
+        trace.producer_state = producer.state;
+        current_trace.push_back(trace);
         if (update_in_progress && processing_region) {
-            current_internal_events.push_back(
-                InternalEventEntry{std::move(event), internal_event_first_visible_region_index, current_region_index});
+            current_internal_events.push_back(InternalEventEntry{std::move(event), producer.region, producer.state,
+                                                                 internal_event_first_visible_region_index,
+                                                                 current_region_index});
         } else {
             pending_internal_events.push_back(std::move(event));
         }
         return Status{};
     }
 
-    Status enqueueOutputEvent(Event event) {
+    Status enqueueOutputEvent(Event event, StateSelection producer) {
         event.category = EventCategory::kOutput;
         event.sequence = next_event_sequence++;
         ++generated_events;
+        EventTraceRecord trace;
+        trace.kind = EventTraceRecord::Kind::kOutputEventGenerated;
+        trace.event = event;
+        trace.producer_region = producer.region;
+        trace.producer_state = producer.state;
+        current_trace.push_back(trace);
         current_output_events.push_back(std::move(event));
         return Status{};
     }
@@ -1221,6 +1237,7 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         impl_->update_in_progress = true;
         impl_->processing_region = false;
         impl_->current_events.clear();
+        impl_->current_trace.clear();
         impl_->current_output_events.clear();
         impl_->current_internal_events.clear();
         while (!impl_->pending_internal_events.empty()) {
@@ -1385,6 +1402,16 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         processed.priority = rule.priority;
         impl_->current_events.push_back(processed);
 
+        EventTraceRecord trace;
+        trace.kind = EventTraceRecord::Kind::kTransitionCommitted;
+        trace.event = processed.event;
+        trace.consumer_region = region_id;
+        trace.from_state = from_leaf;
+        trace.to_state = processed.to_state;
+        trace.transition = rule.id;
+        trace.priority = rule.priority;
+        impl_->current_trace.push_back(trace);
+
         EventLogRecord record;
         record.kind = EventLogRecord::Kind::kTransitionCommitted;
         if (event) {
@@ -1492,6 +1519,14 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                         processed.from_state = state;
                         processed.to_state = state;
                         impl_->current_events.push_back(processed);
+
+                        EventTraceRecord trace;
+                        trace.kind = EventTraceRecord::Kind::kEventConsumed;
+                        trace.event = *event;
+                        trace.consumer_region = region_id;
+                        trace.from_state = state;
+                        trace.to_state = state;
+                        impl_->current_trace.push_back(trace);
                     }
                 }
             }
@@ -1504,6 +1539,12 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
             const bool event_consumed = consumed_internal_sequences.count(entry.event.sequence) != 0;
             if (!event_consumed &&
                 (entry.first_visible_region_index >= next_tick_index || entry.producer_region_index > 0)) {
+                EventTraceRecord trace;
+                trace.kind = EventTraceRecord::Kind::kInternalEventDeferred;
+                trace.event = entry.event;
+                trace.producer_region = entry.producer_region;
+                trace.producer_state = entry.producer_state;
+                impl_->current_trace.push_back(trace);
                 impl_->pending_internal_events.push_back(std::move(entry.event));
             }
         }
@@ -1576,6 +1617,11 @@ std::vector<FaultRecord> StateMachine::faultLog() const {
 std::vector<ProcessedEventRecord> StateMachine::currentEvents() const {
     std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
     return impl_->current_events;
+}
+
+std::vector<EventTraceRecord> StateMachine::currentTrace() const {
+    std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
+    return impl_->current_trace;
 }
 
 std::vector<Event> StateMachine::currentOutputEvents() const {
@@ -1656,13 +1702,13 @@ StateContext::StateContext(StateMachine& machine, const Config& config)
 Status StateContext::postInternalEvent(Event event) {
     auto& impl = *machine_.impl_;
     std::lock_guard<std::recursive_mutex> lock(impl.state_mutex);
-    return impl.enqueueInternalEvent(std::move(event));
+    return impl.enqueueInternalEvent(std::move(event), selection_);
 }
 
 Status StateContext::emitOutput(Event event) {
     auto& impl = *machine_.impl_;
     std::lock_guard<std::recursive_mutex> lock(impl.state_mutex);
-    return impl.enqueueOutputEvent(std::move(event));
+    return impl.enqueueOutputEvent(std::move(event), selection_);
 }
 
 TimePoint StateContext::now() const {

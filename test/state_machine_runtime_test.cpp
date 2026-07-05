@@ -1,5 +1,7 @@
 #include <state_machine/runtime/async_task_executor.hpp>
 #include <state_machine/runtime/event_dispatcher.hpp>
+#include <state_machine/runtime/event_post.hpp>
+#include <state_machine/runtime/event_time.hpp>
 #include <state_machine/runtime/steady_timer.hpp>
 #include <state_machine/state_machine.hpp>
 
@@ -11,6 +13,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -615,6 +618,69 @@ TEST(RuntimeUtilities, EventDispatcherDispatchesInOrderAndIgnoresNullConsumers) 
     EXPECT_EQ(result.consumer_failures, 0u);
 }
 
+TEST(RuntimeUtilities, PostInputEventBuildsEventAndForwardsArguments) {
+    sm::Event captured_event;
+    int captured_value = 0;
+
+    std::function<sm::Status(sm::Event, int)> sink = [&](sm::Event event, int value) {
+        captured_event = std::move(event);
+        captured_value = value;
+        return sm::Status{};
+    };
+
+    const auto status = rt::postInputEvent(sink, kTakeoffRequested, "test_source", 12.5, 42);
+
+    EXPECT_TRUE(status.ok());
+    EXPECT_EQ(captured_event.id, kTakeoffRequested);
+    EXPECT_EQ(captured_event.category, sm::EventCategory::kInput);
+    EXPECT_EQ(captured_event.source, "test_source");
+    EXPECT_DOUBLE_EQ(captured_event.timestamp, 12.5);
+    EXPECT_EQ(captured_value, 42);
+}
+
+TEST(RuntimeUtilities, PostInputEventReportsEmptySinkAndSinkFailure) {
+    bool empty_sink_logged = false;
+    std::function<sm::Status(sm::Event)> empty_sink;
+
+    const auto empty_status = rt::postInputEventWithFailureHandler(
+        empty_sink, kTakeoffRequested, "empty", 1.0,
+        [&](const sm::Status& status, sm::EventId event_id, const std::string& source) {
+            empty_sink_logged = true;
+            EXPECT_EQ(status.code, sm::ErrorCode::kInvalidArgument);
+            EXPECT_EQ(event_id, kTakeoffRequested);
+            EXPECT_EQ(source, "empty");
+        });
+
+    EXPECT_FALSE(empty_status.ok());
+    EXPECT_TRUE(empty_sink_logged);
+
+    bool failure_logged = false;
+    std::function<sm::Status(sm::Event)> failing_sink = [](sm::Event) {
+        return sm::Status::error(sm::ErrorCode::kStopped, "stopped");
+    };
+
+    const auto failed_status = rt::postInputEventWithFailureHandler(
+        failing_sink, kLand, "failing", 2.0,
+        [&](const sm::Status& status, sm::EventId event_id, const std::string& source) {
+            failure_logged = true;
+            EXPECT_EQ(status.code, sm::ErrorCode::kStopped);
+            EXPECT_EQ(status.message, "stopped");
+            EXPECT_EQ(event_id, kLand);
+            EXPECT_EQ(source, "failing");
+        });
+
+    EXPECT_FALSE(failed_status.ok());
+    EXPECT_TRUE(failure_logged);
+}
+
+TEST(RuntimeUtilities, EventTimestampOrFallsBackWhenTimestampIsUnset) {
+    sm::Event stamped(kTakeoffRequested, sm::EventTimestamp{12.5});
+    EXPECT_DOUBLE_EQ(rt::eventTimestampOr(stamped, 3.0), 12.5);
+
+    sm::Event unstamped(kTakeoffRequested);
+    EXPECT_DOUBLE_EQ(rt::eventTimestampOr(unstamped, 3.0), 3.0);
+}
+
 TEST(RuntimeUtilities, EventDispatcherReportsUnhandledAndConsumerFailures) {
     class ThrowingConsumer final : public rt::EventConsumer {
       public:
@@ -643,6 +709,55 @@ TEST(RuntimeUtilities, EventDispatcherReportsUnhandledAndConsumerFailures) {
     ASSERT_EQ(result.failures.size(), 2u);
     EXPECT_EQ(result.failures.front().consumer_name, "throwing");
     EXPECT_EQ(result.failures.front().message, "consumer failed");
+}
+
+TEST(StateMachineRuntime, CurrentTraceRecordsInternalGenerationAndTransition) {
+    auto builder = sm::StateMachine::builder("trace");
+    builder.region(kHealthRegion)
+        .name("health")
+        .order(0)
+        .initial(kHealth)
+        .state(kHealth)
+        .impl(tickPostingState("Health", kSafety))
+        .endRegion()
+        .region(kFlightRegion)
+        .name("flight")
+        .order(10)
+        .initial(kSelfCheck)
+        .state(kSelfCheck)
+        .impl(state("SelfCheck"))
+        .state(kNormal)
+        .impl(state("Normal"))
+        .endRegion()
+        .transition()
+        .from(kSelfCheck)
+        .to(kNormal)
+        .on(kSafety);
+    auto machine = requireMachine(builder.build());
+    ASSERT_TRUE(machine->start().ok());
+
+    const auto result = machine->update({64, 64, true});
+    ASSERT_TRUE(result.ok()) << result.status.message;
+
+    const auto trace = machine->currentTrace();
+    bool found_generated = false;
+    bool found_transition = false;
+    for (const auto& record : trace) {
+        if (record.kind == sm::EventTraceRecord::Kind::kInternalEventGenerated && record.event.id == kSafety) {
+            found_generated = true;
+            EXPECT_EQ(record.producer_region, kHealthRegion);
+            EXPECT_EQ(record.producer_state, kHealth);
+        }
+        if (record.kind == sm::EventTraceRecord::Kind::kTransitionCommitted && record.event.id == kSafety) {
+            found_transition = true;
+            EXPECT_EQ(record.consumer_region, kFlightRegion);
+            EXPECT_EQ(record.from_state, kSelfCheck);
+            EXPECT_EQ(record.to_state, kNormal);
+            EXPECT_TRUE(record.transition.has_value());
+        }
+    }
+    EXPECT_TRUE(found_generated);
+    EXPECT_TRUE(found_transition);
 }
 
 TEST(StateMachineRuntime, PureLogicPerformanceSmoke) {

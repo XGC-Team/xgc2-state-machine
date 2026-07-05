@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(xgc2_state_machine VERSION 0.1.1 LANGUAGES CXX)
+project(xgc2_state_machine VERSION 0.1.3 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
