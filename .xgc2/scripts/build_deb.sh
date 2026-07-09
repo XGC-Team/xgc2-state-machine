@@ -75,7 +75,7 @@ Section: libdevel
 Priority: optional
 Architecture: ${arch}
 Maintainer: XGC2 <apt@example.com>
-Depends: libc6, libgcc-s1, libstdc++6
+Depends: libc6, $(if [[ "${package_distribution}" == "bionic" ]]; then printf 'libgcc1'; else printf 'libgcc-s1'; fi), libstdc++6
 Conflicts: ros-noetic-xgc2-state-machine
 Replaces: ros-noetic-xgc2-state-machine
 Description: XGC2 deterministic C++ state machine development library

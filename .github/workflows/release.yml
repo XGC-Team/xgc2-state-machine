@@ -120,6 +120,16 @@ jobs:
           - arch: amd64
             runner: ubuntu-latest
             platform: linux/amd64
+            image: ubuntu:18.04
+            distribution: bionic
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            image: ubuntu:18.04
+            distribution: bionic
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
             image: ubuntu:20.04
             distribution: focal
           - arch: arm64

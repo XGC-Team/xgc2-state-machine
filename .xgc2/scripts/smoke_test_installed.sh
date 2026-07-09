@@ -21,7 +21,7 @@ probe_dir="${XGC2_STATE_MACHINE_SMOKE_DIR:-$(mktemp -d -t xgc2-state-machine-smo
 mkdir -p "${probe_dir}"
 
 cat > "${probe_dir}/CMakeLists.txt" <<'CMAKE'
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.10)
 project(xgc2_state_machine_link_probe LANGUAGES CXX)
 
 find_package(xgc2_state_machine REQUIRED CONFIG)
