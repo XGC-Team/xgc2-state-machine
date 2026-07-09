@@ -54,13 +54,17 @@ fi
 rm -rf "${build_dir}" "${stage_dir}" "${output_dir}" "${pkg_root}"
 mkdir -p "${output_dir}"
 
-cmake -S "${repo_root}" -B "${build_dir}" \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_INSTALL_PREFIX=/usr \
-  -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG"
+mkdir -p "${build_dir}"
+(
+  cd "${build_dir}"
+  cmake "${repo_root}" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG"
+)
 cmake --build "${build_dir}" -- -j"$(nproc)"
 (cd "${build_dir}" && ctest --output-on-failure)
-DESTDIR="${stage_dir}" cmake --install "${build_dir}"
+DESTDIR="${stage_dir}" cmake --build "${build_dir}" --target install
 
 mkdir -p \
   "${pkg_root}/DEBIAN" \
