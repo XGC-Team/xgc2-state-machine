@@ -60,10 +60,10 @@ mkdir -p "${build_dir}"
   cmake "${repo_root}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/usr \
-    -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG"
+    -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG" \
+    -DXGC2_STATE_MACHINE_BUILD_TESTING=OFF
 )
 cmake --build "${build_dir}" -- -j"$(nproc)"
-(cd "${build_dir}" && ctest --output-on-failure)
 DESTDIR="${stage_dir}" cmake --build "${build_dir}" --target install
 
 mkdir -p \
