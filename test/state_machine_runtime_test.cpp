@@ -655,7 +655,7 @@ TEST(RuntimeUtilities, PostInputEventReportsEmptySinkAndSinkFailure) {
     EXPECT_TRUE(empty_sink_logged);
 
     bool failure_logged = false;
-    std::function<sm::Status(sm::Event)> failing_sink = [](sm::Event) {
+    std::function<sm::Status(sm::Event)> failing_sink = [](const sm::Event&) {
         return sm::Status::error(sm::ErrorCode::kStopped, "stopped");
     };
 
