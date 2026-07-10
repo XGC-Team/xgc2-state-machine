@@ -27,6 +27,26 @@ on:
         type: boolean
         default: false
 
+      release_id:
+        description: Parent orchestrator run id used for correlation and audit.
+        required: false
+        default: ""
+        type: string
+      release_lock_digest:
+        description: SHA256 of the immutable release lock.
+        required: false
+        default: ""
+        type: string
+      trusted_ci_run_id:
+        description: Exact successful push CI run whose trusted deb artifacts may be reused
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
 jobs:
   release-guard:
     runs-on: ubuntu-latest
@@ -164,7 +184,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Download trusted CI artifacts
+        if: ${{ inputs.trusted_ci_run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.trusted_ci_run_id }}
+          name: libxgc2-state-machine-dev-${{ matrix.distribution }}-${{ matrix.arch }}
+          path: .ci/trusted
+
+      - name: Verify and stage trusted CI artifacts
+        if: ${{ inputs.trusted_ci_run_id != '' }}
+        run: |
+          python3 .xgc2/scripts/xgc2_artifact_manifest.py verify-build \
+            --artifact-dir .ci/trusted \
+            --deb-output-dir .ci/debs \
+            --manifest-output-dir .ci/build-manifests \
+            --product libxgc2-state-machine-dev \
+            --distribution "${{ matrix.distribution }}" \
+            --architecture "${{ matrix.arch }}" \
+            --source-sha "${{ inputs.expected_source_sha }}" \
+            --ci-run-id "${{ inputs.trusted_ci_run_id }}"
+
       - name: Build deb and run installed smoke test
+        if: ${{ inputs.trusted_ci_run_id == '' }}
         run: |
           set -euo pipefail
           docker run --rm \
@@ -193,19 +237,95 @@ jobs:
               ./.xgc2/scripts/smoke_test_installed.sh
             '
 
+      - name: Create fallback build manifest
+        if: ${{ inputs.trusted_ci_run_id == '' }}
+        run: |
+          python3 .xgc2/scripts/xgc2_artifact_manifest.py build \
+            --deb-dir .ci/debs \
+            --output-dir .ci/build-manifests \
+            --product libxgc2-state-machine-dev \
+            --product-version "${{ inputs.expected_version }}" \
+            --distribution "${{ matrix.distribution }}" \
+            --architecture "${{ matrix.arch }}" \
+            --source-sha "${{ inputs.expected_source_sha }}" \
+            --ci-run-id "$GITHUB_RUN_ID" \
+            --ci-workflow "$GITHUB_WORKFLOW" \
+            --ci-workflow-ref "$GITHUB_WORKFLOW_REF"
+
       - name: Upload deb artifacts
         uses: actions/upload-artifact@v4
         with:
           name: libxgc2-state-machine-dev-${{ matrix.distribution }}-${{ matrix.arch }}
-          path: .ci/debs/*.deb
+          path: |
+            .ci/debs/*.deb
+            .ci/build-manifests/*.json
+          retention-days: 14
+          include-hidden-files: true
 
-      - name: Publish to self-hosted APT repository
-        if: ${{ inputs.publish_apt }}
-        env:
-          APT_REPO_HOST: ${{ secrets.APT_REPO_HOST }}
-          APT_REPO_PORT: ${{ secrets.APT_REPO_PORT }}
-          APT_REPO_USER: ${{ secrets.APT_REPO_USER }}
-          APT_REPO_SSH_KEY: ${{ secrets.APT_REPO_SSH_KEY }}
-          APT_REPO_KNOWN_HOSTS: ${{ secrets.APT_REPO_KNOWN_HOSTS }}
-          APT_REPO_DISTRIBUTION: ${{ matrix.distribution }}
-        run: ./.xgc2/scripts/publish_self_hosted_apt.sh --deb-dir .ci/debs
+  publish-apt:
+    if: >-
+      ${{
+        always() &&
+        inputs.publish_apt &&
+        needs.deb-build-and-smoke.result == 'success' &&
+        needs.package-compliance.result == 'success' &&
+        (needs.cpp-quality.result == 'success' || needs.cpp-quality.result == 'skipped') &&
+        (needs.source-tests.result == 'success' || needs.source-tests.result == 'skipped')
+      }}
+    needs:
+      - deb-build-and-smoke
+      - package-compliance
+      - cpp-quality
+      - source-tests
+    runs-on: ubuntu-latest
+    concurrency:
+      group: xgc2-apt-${{ matrix.distribution }}
+      cancel-in-progress: false
+    strategy:
+      max-parallel: 1
+      matrix:
+        distribution: [bionic, focal, jammy, noble]
+    env:
+      APT_REPO_HOST: ${{ secrets.APT_REPO_HOST }}
+      APT_REPO_PORT: ${{ secrets.APT_REPO_PORT }}
+      APT_REPO_USER: ${{ secrets.APT_REPO_USER }}
+      APT_REPO_SSH_KEY: ${{ secrets.APT_REPO_SSH_KEY }}
+      APT_REPO_KNOWN_HOSTS: ${{ secrets.APT_REPO_KNOWN_HOSTS }}
+      APT_REPO_DISTRIBUTION: ${{ matrix.distribution }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all architecture artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: libxgc2-state-machine-dev-${{ matrix.distribution }}-*
+          path: release-input
+
+      - name: Validate artifacts and create release manifests
+        run: |
+          for arch in amd64 arm64; do
+            python3 .xgc2/scripts/xgc2_artifact_manifest.py verify-build \
+              --artifact-dir release-input \
+              --deb-output-dir staged/debs \
+              --manifest-output-dir staged/build-manifests \
+              --product libxgc2-state-machine-dev \
+              --distribution "${{ matrix.distribution }}" \
+              --architecture "$arch" \
+              --source-sha "${{ inputs.expected_source_sha }}"
+          done
+          python3 .xgc2/scripts/xgc2_artifact_manifest.py release \
+            --deb-dir staged/debs \
+            --build-manifest-dir staged/build-manifests \
+            --publish-dir publish \
+            --product libxgc2-state-machine-dev \
+            --product-version "${{ inputs.expected_version }}" \
+            --distribution "${{ matrix.distribution }}" \
+            --source-sha "${{ inputs.expected_source_sha }}" \
+            --release-id "${{ inputs.release_id || github.run_id }}" \
+            --release-lock-digest "${{ inputs.release_lock_digest }}"
+
+      - name: Publish one distribution atomically
+        run: ./.xgc2/scripts/publish_self_hosted_apt.sh --deb-dir publish

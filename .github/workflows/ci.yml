@@ -137,8 +137,27 @@ jobs:
               ./.xgc2/scripts/smoke_test_installed.sh
             '
 
+      - name: Create trusted build manifest
+        run: |
+          product_version="$(awk -F': *' '/^version:/ {print $2; exit}' .xgc2/product.yml)"
+          python3 .xgc2/scripts/xgc2_artifact_manifest.py build \
+            --deb-dir .ci/debs \
+            --output-dir .ci/build-manifests \
+            --product libxgc2-state-machine-dev \
+            --product-version "$product_version" \
+            --distribution "${{ matrix.distribution }}" \
+            --architecture "${{ matrix.arch }}" \
+            --source-sha "$GITHUB_SHA" \
+            --ci-run-id "$GITHUB_RUN_ID" \
+            --ci-workflow "$GITHUB_WORKFLOW" \
+            --ci-workflow-ref "$GITHUB_WORKFLOW_REF"
+
       - name: Upload deb artifacts
         uses: actions/upload-artifact@v4
         with:
           name: libxgc2-state-machine-dev-${{ matrix.distribution }}-${{ matrix.arch }}
-          path: .ci/debs/*.deb
+          path: |
+            .ci/debs/*.deb
+            .ci/build-manifests/*.json
+          retention-days: 14
+          include-hidden-files: true
