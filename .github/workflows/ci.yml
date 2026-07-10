@@ -134,7 +134,7 @@ jobs:
               git config --global --add safe.directory /work
               ./.xgc2/scripts/check_package_compliance.sh
               ./.xgc2/scripts/build_deb.sh
-              apt-get install -y ./.ci/debs/libxgc2-state-machine-dev_*.deb
+              apt-get install -y ./debs/libxgc2-state-machine-dev_*.deb
               ./.xgc2/scripts/smoke_test_installed.sh
             '
 
@@ -142,7 +142,7 @@ jobs:
         run: |
           product_version="$(awk -F': *' '/^version:/ {print $2; exit}' .xgc2/product.yml)"
           python3 .xgc2/scripts/xgc2_artifact_manifest.py build \
-            --deb-dir .ci/debs \
+            --deb-dir debs \
             --output-dir .ci/build-manifests \
             --product libxgc2-state-machine-dev \
             --product-version "$product_version" \
@@ -158,7 +158,7 @@ jobs:
         with:
           name: libxgc2-state-machine-dev-${{ matrix.distribution }}-${{ matrix.arch }}
           path: |
-            .ci/debs/*.deb
+            debs/*.deb
             .ci/build-manifests/*.json
           retention-days: 14
           include-hidden-files: true

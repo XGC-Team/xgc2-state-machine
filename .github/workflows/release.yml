@@ -11,44 +11,73 @@ on:
         description: Expected source commit SHA
         required: true
         type: string
-      publish_apt:
-        description: Publish debs to the APT repository
-        required: true
-        type: boolean
-        default: false
+      prepare_action:
+        description: Release-train action
+        required: false
+        default: release
+        type: choice
+        options:
+          - release
+          - compatibility-verify
+      apt_overlay_url:
+        description: Optional release-scoped staging APT base URL
+        required: false
+        default: ""
+        type: string
+      dependency_set_digest:
+        description: SHA256 of the resolved release-train dependency set
+        required: false
+        default: ""
+        type: string
       run_cpp_quality:
         description: Run C++ quality checks
         required: true
-        type: boolean
         default: false
+        type: boolean
       run_source_tests:
         description: Run source tests
         required: true
-        type: boolean
         default: false
-
-      release_id:
-        description: Parent orchestrator run id used for correlation and audit.
-        required: false
-        default: ""
-        type: string
-      release_lock_digest:
-        description: SHA256 of the immutable release lock.
-        required: false
-        default: ""
-        type: string
-      trusted_ci_run_id:
-        description: Exact successful push CI run whose trusted deb artifacts may be reused
-        required: false
-        default: ""
-        type: string
+        type: boolean
 
 permissions:
   actions: read
   contents: read
 
+env:
+  XGC2_APT_OVERLAY_URL: ${{ inputs.apt_overlay_url }}
+  XGC2_DEPENDENCY_SET_DIGEST: ${{ inputs.dependency_set_digest }}
+
 jobs:
+  prepare-contract:
+    name: Validate prepare contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate release-train inputs
+        env:
+          PREPARE_ACTION: ${{ inputs.prepare_action }}
+          APT_OVERLAY_URL: ${{ inputs.apt_overlay_url }}
+          DEPENDENCY_SET_DIGEST: ${{ inputs.dependency_set_digest }}
+        run: |
+          set -euo pipefail
+          case "$PREPARE_ACTION" in
+            release|compatibility-verify) ;;
+            *)
+              echo "unsupported prepare_action: $PREPARE_ACTION" >&2
+              exit 1
+              ;;
+          esac
+          if [[ -n "$DEPENDENCY_SET_DIGEST" && ! "$DEPENDENCY_SET_DIGEST" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "dependency_set_digest must be empty or 64 lowercase hex characters" >&2
+            exit 1
+          fi
+          if [[ -n "$APT_OVERLAY_URL" && ! "$DEPENDENCY_SET_DIGEST" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "apt_overlay_url requires a dependency_set_digest" >&2
+            exit 1
+          fi
+
   release-guard:
+    needs: prepare-contract
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -184,35 +213,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download trusted CI artifacts
-        if: ${{ inputs.trusted_ci_run_id != '' }}
-        uses: actions/download-artifact@v4
-        with:
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ inputs.trusted_ci_run_id }}
-          name: libxgc2-state-machine-dev-${{ matrix.distribution }}-${{ matrix.arch }}
-          path: .ci/trusted
-
-      - name: Verify and stage trusted CI artifacts
-        if: ${{ inputs.trusted_ci_run_id != '' }}
-        run: |
-          python3 .xgc2/scripts/xgc2_artifact_manifest.py verify-build \
-            --artifact-dir .ci/trusted \
-            --deb-output-dir .ci/debs \
-            --manifest-output-dir .ci/build-manifests \
-            --product libxgc2-state-machine-dev \
-            --distribution "${{ matrix.distribution }}" \
-            --architecture "${{ matrix.arch }}" \
-            --source-sha "${{ inputs.expected_source_sha }}" \
-            --ci-run-id "${{ inputs.trusted_ci_run_id }}"
-
       - name: Build deb and run installed smoke test
-        if: ${{ inputs.trusted_ci_run_id == '' }}
         run: |
           set -euo pipefail
           install -d .ci/build-manifests
           docker run --rm \
+            -e XGC2_APT_OVERLAY_URL="${XGC2_APT_OVERLAY_URL:-}" \
             --platform "${{ matrix.platform }}" \
             -e PACKAGE_DISTRIBUTION="${{ matrix.distribution }}" \
             -v "${GITHUB_WORKSPACE}:/work" \
@@ -234,15 +240,14 @@ jobs:
               git config --global --add safe.directory /work
               ./.xgc2/scripts/check_package_compliance.sh
               ./.xgc2/scripts/build_deb.sh
-              apt-get install -y ./.ci/debs/libxgc2-state-machine-dev_*.deb
+              apt-get install -y ./debs/libxgc2-state-machine-dev_*.deb
               ./.xgc2/scripts/smoke_test_installed.sh
             '
 
-      - name: Create fallback build manifest
-        if: ${{ inputs.trusted_ci_run_id == '' }}
+      - name: Create release-train build manifest
         run: |
           python3 .xgc2/scripts/xgc2_artifact_manifest.py build \
-            --deb-dir .ci/debs \
+            --deb-dir debs \
             --output-dir .ci/build-manifests \
             --product libxgc2-state-machine-dev \
             --product-version "${{ inputs.expected_version }}" \
@@ -254,79 +259,12 @@ jobs:
             --ci-workflow-ref "$GITHUB_WORKFLOW_REF"
 
       - name: Upload deb artifacts
+        if: ${{ inputs.prepare_action == 'release' }}
         uses: actions/upload-artifact@v4
         with:
           name: libxgc2-state-machine-dev-${{ matrix.distribution }}-${{ matrix.arch }}
           path: |
-            .ci/debs/*.deb
+            debs/*.deb
             .ci/build-manifests/*.json
           retention-days: 14
           include-hidden-files: true
-
-  publish-apt:
-    if: >-
-      ${{
-        always() &&
-        inputs.publish_apt &&
-        needs.deb-build-and-smoke.result == 'success' &&
-        needs.package-compliance.result == 'success' &&
-        (needs.cpp-quality.result == 'success' || needs.cpp-quality.result == 'skipped') &&
-        (needs.source-tests.result == 'success' || needs.source-tests.result == 'skipped')
-      }}
-    needs:
-      - deb-build-and-smoke
-      - package-compliance
-      - cpp-quality
-      - source-tests
-    runs-on: ubuntu-latest
-    concurrency:
-      group: xgc2-apt-${{ matrix.distribution }}
-      cancel-in-progress: false
-    strategy:
-      max-parallel: 1
-      matrix:
-        distribution: [bionic, focal, jammy, noble]
-    env:
-      APT_REPO_HOST: ${{ secrets.APT_REPO_HOST }}
-      APT_REPO_PORT: ${{ secrets.APT_REPO_PORT }}
-      APT_REPO_USER: ${{ secrets.APT_REPO_USER }}
-      APT_REPO_SSH_KEY: ${{ secrets.APT_REPO_SSH_KEY }}
-      APT_REPO_KNOWN_HOSTS: ${{ secrets.APT_REPO_KNOWN_HOSTS }}
-      APT_REPO_DISTRIBUTION: ${{ matrix.distribution }}
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all architecture artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: libxgc2-state-machine-dev-${{ matrix.distribution }}-*
-          path: release-input
-
-      - name: Validate artifacts and create release manifests
-        run: |
-          for arch in amd64 arm64; do
-            python3 .xgc2/scripts/xgc2_artifact_manifest.py verify-build \
-              --artifact-dir release-input \
-              --deb-output-dir staged/debs \
-              --manifest-output-dir staged/build-manifests \
-              --product libxgc2-state-machine-dev \
-              --distribution "${{ matrix.distribution }}" \
-              --architecture "$arch" \
-              --source-sha "${{ inputs.expected_source_sha }}"
-          done
-          python3 .xgc2/scripts/xgc2_artifact_manifest.py release \
-            --deb-dir staged/debs \
-            --build-manifest-dir staged/build-manifests \
-            --publish-dir publish \
-            --product libxgc2-state-machine-dev \
-            --product-version "${{ inputs.expected_version }}" \
-            --distribution "${{ matrix.distribution }}" \
-            --source-sha "${{ inputs.expected_source_sha }}" \
-            --release-id "${{ inputs.release_id || github.run_id }}" \
-            --release-lock-digest "${{ inputs.release_lock_digest }}"
-
-      - name: Publish one distribution atomically
-        run: ./.xgc2/scripts/publish_self_hosted_apt.sh --deb-dir publish

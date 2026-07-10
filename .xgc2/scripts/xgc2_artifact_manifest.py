@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create and verify XGC2 build/release artifact manifests."""
+"""Create and verify XGC2 trusted build artifact manifests."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from typing import Any
 
 
 BUILD_SCHEMA = "xgc2.build-artifact.v1"
-RELEASE_SCHEMA = "xgc2.release-artifact.v1"
 
 
 def utc_now() -> str:
@@ -177,69 +176,6 @@ def verify_build(args: argparse.Namespace) -> None:
             copied_manifests.add(manifest_path)
 
 
-def create_release(args: argparse.Namespace) -> None:
-    deb_root = Path(args.deb_dir)
-    build_root = Path(args.build_manifest_dir)
-    publish_root = Path(args.publish_dir)
-    targets = args.target_architecture or []
-    manifests = sorted(build_root.rglob("*.json"))
-    selected = 0
-    for build_path in manifests:
-        build = json.loads(build_path.read_text(encoding="utf-8"))
-        if build.get("schema") != BUILD_SCHEMA or build.get("product") != args.product:
-            continue
-        if build.get("distribution") != args.distribution or build.get("source_sha") != args.source_sha:
-            continue
-        build_arch = str(build["architecture"])
-        manifest_targets = targets or [build_arch]
-        if build_arch != "all":
-            if build_arch not in manifest_targets:
-                continue
-            manifest_targets = [build_arch]
-        deb_entries = build.get("debs")
-        if not isinstance(deb_entries, list) or not deb_entries:
-            raise ValueError(f"{build_path}: debs must be a non-empty list")
-        for declared in deb_entries:
-            deb = find_deb(deb_root, str(declared.get("file", "")))
-            validate_deb(deb, declared)
-            publish_deb = publish_root / deb.name
-            publish_deb.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(deb, publish_deb)
-        included_build = publish_root / "build-manifests" / build_path.name
-        included_build.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(build_path, included_build)
-        build_digest = sha256(included_build)
-        for target in manifest_targets:
-            payload = {
-                "schema": RELEASE_SCHEMA,
-                "product": args.product,
-                "source_sha": args.source_sha,
-                "version": args.product_version,
-                "distribution": args.distribution,
-                "architecture": target,
-                "ci": build["ci"],
-                "debs": deb_entries,
-                "release_id": args.release_id,
-                "release_lock_digest": args.release_lock_digest,
-                "build_manifest": str(included_build.relative_to(publish_root)),
-                "build_manifest_digest": build_digest,
-                "published_at": utc_now(),
-            }
-            for declared in deb_entries:
-                path = (
-                    publish_root
-                    / "manifests"
-                    / args.product
-                    / args.distribution
-                    / target
-                    / f"{declared['package']}_{declared['version']}.json"
-                )
-                write_json(path, payload)
-                selected += 1
-    if not selected:
-        raise ValueError("no matching build manifests found for release")
-
-
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser()
     sub = result.add_subparsers(dest="command", required=True)
@@ -268,18 +204,6 @@ def parser() -> argparse.ArgumentParser:
     verify.add_argument("--ci-run-id")
     verify.set_defaults(func=verify_build)
 
-    release = sub.add_parser("release")
-    release.add_argument("--deb-dir", required=True)
-    release.add_argument("--build-manifest-dir", required=True)
-    release.add_argument("--publish-dir", required=True)
-    release.add_argument("--product", required=True)
-    release.add_argument("--product-version", required=True)
-    release.add_argument("--distribution", required=True)
-    release.add_argument("--source-sha", required=True)
-    release.add_argument("--release-id", required=True)
-    release.add_argument("--release-lock-digest", default="")
-    release.add_argument("--target-architecture", action="append")
-    release.set_defaults(func=create_release)
     return result
 
 
