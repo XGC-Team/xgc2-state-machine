@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900" role="img" aria-label="XGC2 State Machine architecture overview">
+  <title>XGC2 State Machine — Architecture &amp; Usage</title>
+  <desc>Clear technical overview of install surface, thread rules, main call flow, update tick internals, and event categories.</desc>
+
+  <style>
+    .bg { fill: #ffffff; }
+    .title { font: 700 28px/1.2 "IBM Plex Sans", "Segoe UI", Helvetica, Arial, sans-serif; fill: #111; }
+    .subtitle { font: 400 14px/1.3 "IBM Plex Sans", "Segoe UI", Helvetica, Arial, sans-serif; fill: #444; }
+    .h { font: 700 13px/1.2 "IBM Plex Sans", "Segoe UI", Helvetica, Arial, sans-serif; fill: #111; }
+    .t { font: 400 12px/1.35 "IBM Plex Sans", "Segoe UI", Helvetica, Arial, sans-serif; fill: #222; }
+    .mono { font: 400 11.5px/1.4 "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace; fill: #222; }
+    .num { font: 700 14px/1 "IBM Plex Sans", "Segoe UI", Helvetica, Arial, sans-serif; fill: #111; }
+    .muted { font: 400 11px/1.35 "IBM Plex Sans", "Segoe UI", Helvetica, Arial, sans-serif; fill: #555; }
+    .box { fill: none; stroke: #111; stroke-width: 1.25; }
+    .box-em { fill: none; stroke: #111; stroke-width: 2; }
+    .rule { stroke: #111; stroke-width: 1; }
+    .arrow { stroke: #111; stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
+    .arrow-soft { stroke: #111; stroke-width: 1; fill: none; marker-end: url(#arrow); stroke-dasharray: 3 2; }
+    .divider { stroke: #bbb; stroke-width: 1; }
+    .table-line { stroke: #111; stroke-width: 1; }
+  </style>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#111"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1280" height="900"/>
+
+  <!-- Title -->
+  <text class="title" x="48" y="48">XGC2 State Machine</text>
+  <text class="subtitle" x="48" y="72">Deterministic event-driven C++17 runtime · libxgc2-state-machine-dev</text>
+  <line class="rule" x1="48" y1="88" x2="1232" y2="88"/>
+
+  <!-- Row 1: three columns -->
+  <text class="h" x="48" y="120">1. Install</text>
+  <text class="mono" x="48" y="144">find_package(xgc2_state_machine REQUIRED CONFIG)</text>
+  <text class="mono" x="48" y="162">#include "state_machine/state_machine.hpp"</text>
+  <text class="mono" x="48" y="180">target_link_libraries(... xgc2_state_machine::state_machine)</text>
+
+  <line class="divider" x1="470" y1="108" x2="470" y2="196"/>
+
+  <text class="h" x="494" y="120">2. Public types</text>
+  <text class="t" x="494" y="144">StateMachine · State (subclass)</text>
+  <text class="t" x="494" y="162">StateContext · GuardContext (read-only)</text>
+  <text class="t" x="494" y="180">Status · Result&lt;T&gt;  (callers must check)</text>
+
+  <line class="divider" x1="820" y1="108" x2="820" y2="196"/>
+
+  <rect class="box-em" x="844" y="108" width="388" height="88"/>
+  <text class="h" x="860" y="132">3. Thread rule</text>
+  <text class="mono" x="860" y="154">postEvent()  → any thread   (kInput only)</text>
+  <text class="mono" x="860" y="172">update()     → owner thread only</text>
+  <text class="mono" x="860" y="190">stop()       → request; exits on next update()</text>
+
+  <!-- Main flow -->
+  <text class="h" x="48" y="236">4. Main call flow</text>
+
+  <!-- boxes 1-5 -->
+  <rect class="box" x="48" y="256" width="200" height="118"/>
+  <text class="num" x="60" y="278">① Build</text>
+  <text class="t" x="60" y="300">Builder only:</text>
+  <text class="mono" x="60" y="318">region → state → transition</text>
+  <text class="t" x="60" y="338">graph fixed before start()</text>
+  <text class="muted" x="60" y="358">build() → Result&lt;unique_ptr&gt;</text>
+
+  <line class="arrow" x1="248" y1="315" x2="276" y2="315"/>
+
+  <rect class="box" x="280" y="256" width="168" height="118"/>
+  <text class="num" x="292" y="278">② Start</text>
+  <text class="mono" x="292" y="304">start()</text>
+  <text class="t" x="292" y="324">bind owner thread</text>
+  <text class="muted" x="292" y="348">(or bindOwnerThread)</text>
+
+  <line class="arrow" x1="448" y1="315" x2="476" y2="315"/>
+
+  <rect class="box" x="480" y="256" width="188" height="118"/>
+  <text class="num" x="492" y="278">③ Input</text>
+  <text class="mono" x="492" y="304">postEvent(kInput)</text>
+  <text class="t" x="492" y="324">thread-safe inbox</text>
+  <text class="t" x="492" y="342">FIFO by Event::sequence</text>
+  <text class="muted" x="492" y="360">max_pending_events bound</text>
+
+  <line class="arrow" x1="668" y1="315" x2="696" y2="315"/>
+
+  <rect class="box-em" x="700" y="248" width="220" height="134"/>
+  <text class="num" x="712" y="270">④ Update tick</text>
+  <text class="t" x="712" y="294">owner-thread only</text>
+  <text class="t" x="712" y="312">snapshot inputs</text>
+  <text class="t" x="712" y="330">evaluate transitions</text>
+  <text class="t" x="712" y="348">run state callbacks</text>
+  <text class="muted" x="712" y="368">≤1 transition / region / tick</text>
+
+  <line class="arrow" x1="920" y1="315" x2="948" y2="315"/>
+
+  <rect class="box" x="952" y="256" width="280" height="118"/>
+  <text class="num" x="964" y="278">⑤ Effects</text>
+  <text class="mono" x="964" y="300">kInternal  same-tick (ordered)</text>
+  <text class="mono" x="964" y="318">kOutput    external only</text>
+  <text class="t" x="964" y="338">tasks / faults → events</text>
+  <text class="muted" x="964" y="358">then stop() → exits on update</text>
+
+  <!-- Inside update -->
+  <text class="h" x="48" y="420">5. Inside one update()</text>
+  <rect class="box" x="48" y="436" width="1184" height="168"/>
+
+  <!-- five steps as columns -->
+  <text class="num" x="68" y="464">A</text>
+  <text class="t" x="88" y="464">Input snapshot</text>
+  <text class="muted" x="68" y="486">external inputs frozen</text>
+  <text class="muted" x="68" y="504">at tick start</text>
+  <text class="muted" x="68" y="522">posts during callbacks</text>
+  <text class="muted" x="68" y="540">→ later ticks</text>
+
+  <line class="divider" x1="280" y1="452" x2="280" y2="588"/>
+
+  <text class="num" x="300" y="464">B</text>
+  <text class="t" x="320" y="464">Regions</text>
+  <text class="muted" x="300" y="486">by execution_order</text>
+  <text class="muted" x="300" y="504">parallel top-level</text>
+  <text class="muted" x="300" y="522">registration order</text>
+  <text class="muted" x="300" y="540">as tie-break</text>
+
+  <line class="divider" x1="512" y1="452" x2="512" y2="588"/>
+
+  <text class="num" x="532" y="464">C</text>
+  <text class="t" x="552" y="464">Match transitions</text>
+  <text class="muted" x="532" y="486">parent → child</text>
+  <text class="muted" x="532" y="504">priority desc</text>
+  <text class="muted" x="532" y="522">evaluation_order asc</text>
+  <text class="muted" x="532" y="540">event has no priority</text>
+
+  <line class="divider" x1="760" y1="452" x2="760" y2="588"/>
+
+  <text class="num" x="780" y="464">D</text>
+  <text class="t" x="800" y="464">Exit / enter</text>
+  <text class="muted" x="780" y="486">LCA-based order</text>
+  <text class="muted" x="780" y="504">External · Self</text>
+  <text class="muted" x="780" y="522">Internal · Targetless</text>
+  <text class="muted" x="780" y="540">default child expand</text>
+
+  <line class="divider" x1="1000" y1="452" x2="1000" y2="588"/>
+
+  <text class="num" x="1020" y="464">E</text>
+  <text class="t" x="1040" y="464">Callbacks</text>
+  <text class="mono" x="1020" y="486">onEnter / onEvent</text>
+  <text class="mono" x="1020" y="504">onTick / onExit</text>
+  <text class="muted" x="1020" y="526">return Status only</text>
+  <text class="muted" x="1020" y="544">never call update()</text>
+  <text class="muted" x="1020" y="562">never mutate graph</text>
+
+  <!-- Event kinds table -->
+  <text class="h" x="48" y="640">6. Event categories</text>
+  <line class="table-line" x1="48" y1="656" x2="1232" y2="656"/>
+  <text class="h" x="60" y="678">Category</text>
+  <text class="h" x="220" y="678">Role</text>
+  <text class="h" x="400" y="678">How created</text>
+  <text class="h" x="720" y="678">Drives transitions?</text>
+  <line class="table-line" x1="48" y1="690" x2="1232" y2="690"/>
+
+  <text class="mono" x="60" y="714">kInput</text>
+  <text class="t" x="220" y="714">external work</text>
+  <text class="mono" x="400" y="714">postEvent() only</text>
+  <text class="t" x="720" y="714">yes (after snapshot)</text>
+
+  <text class="mono" x="60" y="740">kInternal</text>
+  <text class="t" x="220" y="740">FSM follow-up</text>
+  <text class="mono" x="400" y="740">StateContext::postInternalEvent()</text>
+  <text class="t" x="720" y="740">yes · later regions, same tick</text>
+
+  <text class="mono" x="60" y="766">kOutput</text>
+  <text class="t" x="220" y="766">side effect</text>
+  <text class="mono" x="400" y="766">StateContext::emitOutput()</text>
+  <text class="t" x="720" y="766">no · currentOutputEvents() only</text>
+
+  <line class="table-line" x1="48" y1="784" x2="1232" y2="784"/>
+
+  <!-- Footer contracts -->
+  <text class="muted" x="48" y="820">Contracts: no 3rd-party FSM/BT · no built-in thread pool · no hidden priority queue · faults bypass inbox bound · fused by max_fault_depth</text>
+  <text class="muted" x="48" y="842">Source: include/state_machine/state_machine.hpp · docs/runtime_design.md · products/common/state-machine</text>
+  <text class="muted" x="48" y="864">Minimal usage: build → start → postEvent → update* → stop</text>
+</svg>
