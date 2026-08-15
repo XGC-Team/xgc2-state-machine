@@ -18,16 +18,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Run C++ quality gate
-        run: |
-          set -euo pipefail
-          docker pull ghcr.io/xgc-team/xgc2-images/xgc2-build-focal-dev:1.0.0
-          docker run --rm --network none \
-            -v "${GITHUB_WORKSPACE}:/work" -w /work \
-            ghcr.io/xgc-team/xgc2-images/xgc2-build-focal-dev:1.0.0 \
-            bash -lc './.xgc2/scripts/check_cpp_quality.sh'
-
   package-compliance:
     runs-on: ubuntu-latest
     defaults:
@@ -36,16 +26,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Check whitespace
-        run: git -C "${GITHUB_WORKSPACE}" diff --check HEAD
-
-      - name: Package compliance
-        run: |
-          set -euo pipefail
-          cd "${GITHUB_WORKSPACE}"
-          ./.xgc2/scripts/check_package_compliance.sh
-
   deb-build-and-smoke:
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -98,6 +78,27 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+
+      - name: Run C++ quality gate
+        run: |
+          set -euo pipefail
+          docker pull ghcr.io/xgc-team/xgc2-images/xgc2-build-focal-dev:1.0.0
+          docker run --rm --network none \
+            -v "${GITHUB_WORKSPACE}:/work" -w /work \
+            ghcr.io/xgc-team/xgc2-images/xgc2-build-focal-dev:1.0.0 \
+            bash -lc './.xgc2/scripts/check_cpp_quality.sh'
+
+
+      - name: Check whitespace
+        run: git -C "${GITHUB_WORKSPACE}" diff --check HEAD
+
+      - name: Package compliance
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}"
+          ./.xgc2/scripts/check_package_compliance.sh
+
 
       - name: Build deb and run installed smoke test
         run: |

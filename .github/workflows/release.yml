@@ -29,16 +29,6 @@ on:
         required: false
         default: ""
         type: string
-      run_cpp_quality:
-        description: Run C++ quality checks
-        required: true
-        default: false
-        type: boolean
-      run_source_tests:
-        description: Run source tests
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   actions: read
@@ -75,7 +65,6 @@ jobs:
             echo "apt_overlay_url requires a dependency_set_digest" >&2
             exit 1
           fi
-
   release-guard:
     needs: prepare-contract
     runs-on: ubuntu-latest
@@ -85,23 +74,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Validate release inputs
-        run: |
-          set -euo pipefail
-          product_version="$(awk -F': *' '/^version:[[:space:]]*/ {print $2; exit}' .xgc2/product.yml)"
-          if [[ "${product_version}" != "${{ inputs.expected_version }}" ]]; then
-            echo "product.yml version ${product_version} != expected_version ${{ inputs.expected_version }}" >&2
-            exit 1
-          fi
-          source_sha="$(git rev-parse HEAD)"
-          if [[ "${source_sha}" != "${{ inputs.expected_source_sha }}" ]]; then
-            echo "HEAD ${source_sha} != expected_source_sha ${{ inputs.expected_source_sha }}" >&2
-            exit 1
-          fi
-
   cpp-quality:
-    if: ${{ inputs.run_cpp_quality }}
     needs: release-guard
     runs-on: ubuntu-latest
     defaults:
@@ -110,16 +83,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Run C++ quality gate
-        run: |
-          set -euo pipefail
-          docker pull ghcr.io/xgc-team/xgc2-images/xgc2-build-focal-dev:1.0.0
-          docker run --rm --network none \
-            -v "${GITHUB_WORKSPACE}:/work" -w /work \
-            ghcr.io/xgc-team/xgc2-images/xgc2-build-focal-dev:1.0.0 \
-            bash -lc './.xgc2/scripts/check_cpp_quality.sh'
-
   package-compliance:
     needs: release-guard
     runs-on: ubuntu-latest
@@ -129,18 +92,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Check whitespace
-        run: git -C "${GITHUB_WORKSPACE}" diff --check HEAD
-
-      - name: Package compliance
-        run: |
-          set -euo pipefail
-          cd "${GITHUB_WORKSPACE}"
-          ./.xgc2/scripts/check_package_compliance.sh
-
   source-tests:
-    if: ${{ inputs.run_source_tests }}
     needs: release-guard
     runs-on: ubuntu-latest
     defaults:
@@ -149,7 +101,6 @@ jobs:
     steps:
       - name: No standalone source tests configured
         run: echo "Source tests run as part of the deb build smoke test for libxgc2-state-machine-dev."
-
   deb-build-and-smoke:
     needs: release-guard
     runs-on: ${{ matrix.runner }}
@@ -203,6 +154,44 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+
+
+      - name: Validate release inputs
+        run: |
+          set -euo pipefail
+          product_version="$(awk -F': *' '/^version:[[:space:]]*/ {print $2; exit}' .xgc2/product.yml)"
+          if [[ "${product_version}" != "${{ inputs.expected_version }}" ]]; then
+            echo "product.yml version ${product_version} != expected_version ${{ inputs.expected_version }}" >&2
+            exit 1
+          fi
+          source_sha="$(git rev-parse HEAD)"
+          if [[ "${source_sha}" != "${{ inputs.expected_source_sha }}" ]]; then
+            echo "HEAD ${source_sha} != expected_source_sha ${{ inputs.expected_source_sha }}" >&2
+            exit 1
+          fi
+
+
+      - name: Run C++ quality gate
+        run: |
+          set -euo pipefail
+          docker pull ghcr.io/xgc-team/xgc2-images/xgc2-build-focal-dev:1.0.0
+          docker run --rm --network none \
+            -v "${GITHUB_WORKSPACE}:/work" -w /work \
+            ghcr.io/xgc-team/xgc2-images/xgc2-build-focal-dev:1.0.0 \
+            bash -lc './.xgc2/scripts/check_cpp_quality.sh'
+
+
+      - name: Check whitespace
+        run: git -C "${GITHUB_WORKSPACE}" diff --check HEAD
+
+      - name: Package compliance
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}"
+          ./.xgc2/scripts/check_package_compliance.sh
+
+
 
       - name: Build deb and run installed smoke test
         run: |
