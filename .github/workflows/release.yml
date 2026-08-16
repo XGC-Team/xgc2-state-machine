@@ -196,7 +196,7 @@ jobs:
       - name: Build deb and run installed smoke test
         run: |
           set -euo pipefail
-          install -d .ci/build-manifests
+          install -d "$GITHUB_WORKSPACE/.ci/build-manifests"
           docker run --rm --network none \
             -e XGC2_APT_OVERLAY_URL="${XGC2_APT_OVERLAY_URL:-}" \
             --platform "${{ matrix.platform }}" \
