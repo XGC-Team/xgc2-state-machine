@@ -155,6 +155,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Prepare host manifest directory
+        run: |
+          install -d "$GITHUB_WORKSPACE/.ci/build-manifests"
+
 
 
       - name: Validate release inputs
@@ -196,7 +200,6 @@ jobs:
       - name: Build deb and run installed smoke test
         run: |
           set -euo pipefail
-          install -d "$GITHUB_WORKSPACE/.ci/build-manifests"
           docker run --rm --network none \
             -e XGC2_APT_OVERLAY_URL="${XGC2_APT_OVERLAY_URL:-}" \
             --platform "${{ matrix.platform }}" \

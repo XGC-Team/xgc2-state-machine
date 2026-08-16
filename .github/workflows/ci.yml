@@ -79,6 +79,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Prepare host manifest directory
+        run: |
+          install -d "$GITHUB_WORKSPACE/.ci/build-manifests"
+
 
       - name: Run C++ quality gate
         run: |
@@ -103,7 +107,6 @@ jobs:
       - name: Build deb and run installed smoke test
         run: |
           set -euo pipefail
-          install -d "$GITHUB_WORKSPACE/.ci/build-manifests"
           docker run --rm --network none \
             --platform "${{ matrix.platform }}" \
             -e PACKAGE_DISTRIBUTION="${{ matrix.distribution }}" \
