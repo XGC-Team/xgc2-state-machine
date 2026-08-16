@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 
-BUILD_SCHEMA = "xgc2.build-artifact.v2"
+BUILD_SCHEMA = "xgc2.build-artifact.v1"
 
 
 def utc_now() -> str:
