@@ -128,7 +128,15 @@ struct StateMachine::Impl {
     std::vector<RegionId> region_order;
     std::vector<RegionEntry*> top_level_regions; // regions without an owner state, in region_order
     uint64_t active_epoch{1};                    // bumped whenever any region's active leaf changes
-    std::vector<const StateEntry*> update_chain; // active states of the region update() is processing
+    // Scratch buffers of update(), kept so that a steady-state tick allocates nothing.
+    std::vector<const StateEntry*> update_chain;       // active states of the region being processed
+    std::vector<Event> input_batch;                    // external events taken from the inbox
+    std::vector<Event> initial_internal_batch;         // internal events deferred by the previous update
+    std::vector<const Event*> visible_base;            // both batches, in sequence order
+    std::vector<const Event*> visible_with_internal;   // visible_base plus internal events of this update
+    std::vector<uint64_t> consumed_internal_sequences; // internal events that triggered a transition
+    std::vector<StateId> exit_roots;
+    std::vector<StateId> enter_suffix;
     std::vector<TransitionRule> transitions;
     TransitionId next_transition_id{1};
     uint64_t next_transition_registration_order{1};
@@ -1294,8 +1302,8 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         options.max_transitions_per_update = 1;
     }
 
-    std::vector<Event> input_batch;
-    std::vector<Event> initial_internal_batch;
+    std::vector<Event>& input_batch = impl_->input_batch;
+    std::vector<Event>& initial_internal_batch = impl_->initial_internal_batch;
     {
         std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
         auto owner_status = impl_->ensureOwnerBound();
@@ -1335,6 +1343,10 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         impl_->current_trace.clear();
         impl_->current_output_events.clear();
         impl_->current_internal_events.clear();
+        // update() is not re-entrant (checked above), so these members are free to reuse.
+        input_batch.clear();
+        initial_internal_batch.clear();
+        impl_->consumed_internal_sequences.clear();
         while (!impl_->pending_internal_events.empty()) {
             initial_internal_batch.push_back(std::move(impl_->pending_internal_events.front()));
             impl_->pending_internal_events.pop_front();
@@ -1361,26 +1373,48 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         result.lifecycle = impl_->lifecycle;
         return Result<UpdateResult>{result.status, result};
     };
-    std::set<uint64_t> consumed_internal_sequences;
-
-    auto visible_events_for_region = [&](size_t region_index) {
-        std::vector<const Event*> visible;
-        visible.reserve(input_batch.size() + initial_internal_batch.size() + impl_->current_internal_events.size());
-        std::transform(input_batch.begin(), input_batch.end(), std::back_inserter(visible), [](const Event& event) {
-            return &event;
-        });
-        std::transform(initial_internal_batch.begin(), initial_internal_batch.end(), std::back_inserter(visible),
-                       [](const Event& event) {
-                           return &event;
-                       });
+    // The events the states of a region can see, ordered by sequence: the batch taken from the
+    // inbox, the internal events deferred from the previous update, and the internal events
+    // generated so far in this update by earlier regions (or by the region's own tick).
+    const auto by_sequence = [](const Event* lhs, const Event* rhs) {
+        return lhs->sequence < rhs->sequence;
+    };
+    const auto sort_by_sequence = [&](std::vector<const Event*>& events) {
+        if (!std::is_sorted(events.begin(), events.end(), by_sequence)) {
+            std::stable_sort(events.begin(), events.end(), by_sequence);
+        }
+    };
+    bool visible_base_built = false;
+    auto visible_events_for_region = [&](size_t region_index) -> const std::vector<const Event*>& {
+        std::vector<const Event*>& base = impl_->visible_base;
+        if (!visible_base_built) {
+            base.clear();
+            std::transform(input_batch.begin(), input_batch.end(), std::back_inserter(base), [](const Event& event) {
+                return &event;
+            });
+            std::transform(initial_internal_batch.begin(), initial_internal_batch.end(), std::back_inserter(base),
+                           [](const Event& event) {
+                               return &event;
+                           });
+            sort_by_sequence(base);
+            visible_base_built = true;
+        }
+        const bool has_internal =
+            std::any_of(impl_->current_internal_events.begin(), impl_->current_internal_events.end(),
+                        [region_index](const StateMachine::Impl::InternalEventEntry& entry) {
+                            return entry.first_visible_region_index <= region_index;
+                        });
+        if (!has_internal) {
+            return base;
+        }
+        std::vector<const Event*>& visible = impl_->visible_with_internal;
+        visible.assign(base.begin(), base.end());
         for (const auto& entry : impl_->current_internal_events) {
             if (entry.first_visible_region_index <= region_index) {
                 visible.push_back(&entry.event);
             }
         }
-        std::stable_sort(visible.begin(), visible.end(), [](const Event* lhs, const Event* rhs) {
-            return lhs->sequence < rhs->sequence;
-        });
+        sort_by_sequence(visible);
         return visible;
     };
 
@@ -1408,8 +1442,10 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         const StateId from_leaf = impl_->activeLeafOf(region_id);
         const bool no_exit_enter = rule.type == TransitionType::kInternal || rule.type == TransitionType::kTargetless;
         StateId to_state = rule.target.value_or(rule.from);
-        std::vector<StateId> exit_roots;
-        std::vector<StateId> enter_suffix;
+        std::vector<StateId>& exit_roots = impl_->exit_roots;
+        std::vector<StateId>& enter_suffix = impl_->enter_suffix;
+        exit_roots.clear();
+        enter_suffix.clear();
 
         if (!no_exit_enter) {
             const auto& from_path = impl_->pathOf(rule.from);
@@ -1479,7 +1515,7 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         if (event) {
             ++result.events_processed;
             if (event->category == EventCategory::kInternal) {
-                consumed_internal_sequences.insert(event->sequence);
+                impl_->consumed_internal_sequences.push_back(event->sequence);
             }
         }
         ProcessedEventRecord processed;
@@ -1564,7 +1600,7 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                 impl_->internal_event_first_visible_region_index = region_index + 1;
             }
 
-            const auto visible = visible_events_for_region(region_index);
+            const std::vector<const Event*>& visible = visible_events_for_region(region_index);
             TransitionRule* selected_rule = nullptr;
             const Event* selected_event = nullptr;
             for (const StateMachine::Impl::StateEntry* entry : active) {
@@ -1637,7 +1673,9 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
 
         const size_t next_tick_index = top_regions.size();
         for (auto& entry : impl_->current_internal_events) {
-            const bool event_consumed = consumed_internal_sequences.count(entry.event.sequence) != 0;
+            const auto& consumed = impl_->consumed_internal_sequences;
+            const bool event_consumed =
+                std::find(consumed.begin(), consumed.end(), entry.event.sequence) != consumed.end();
             if (!event_consumed &&
                 (entry.first_visible_region_index >= next_tick_index || entry.producer_region_index > 0)) {
                 EventTraceRecord trace;
@@ -1683,6 +1721,10 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         std::lock_guard<std::mutex> inbox_lock(impl_->inbox_mutex);
         result.generated_events = impl_->generated_events - generated_before;
     }
+    input_batch.clear();
+    initial_internal_batch.clear();
+    impl_->visible_base.clear();
+    impl_->visible_with_internal.clear();
     return finish();
 }
 
