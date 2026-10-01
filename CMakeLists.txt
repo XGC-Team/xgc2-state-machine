@@ -121,6 +121,14 @@ if(XGC2_STATE_MACHINE_BUILD_TESTING)
       COMMAND state_machine_equivalence_test --internal-anywhere
         ${CMAKE_CURRENT_SOURCE_DIR}/test/golden/state_machine_equivalence_internal_anywhere.golden)
     set_tests_properties(state_machine_equivalence_internal_anywhere_test PROPERTIES TIMEOUT 120)
+
+    # Producer threads post while the owner updates: nothing lost, nothing reordered.
+    add_executable(state_machine_concurrency_test test/state_machine_concurrency_test.cpp)
+    target_link_libraries(state_machine_concurrency_test
+      PRIVATE xgc2_state_machine::state_machine Threads::Threads
+    )
+    add_test(NAME state_machine_concurrency_test COMMAND state_machine_concurrency_test)
+    set_tests_properties(state_machine_concurrency_test PROPERTIES TIMEOUT 60)
   endif()
 endif()
 

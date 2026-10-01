@@ -1327,11 +1327,10 @@ Status StateMachine::cancelTask(const TaskHandle& handle) {
 
 Result<UpdateResult> StateMachine::update(UpdateOptions options) {
     UpdateResult result;
-    size_t generated_before = 0;
-    {
-        std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
-        generated_before = impl_->generated_events;
-    }
+    // One critical section for the whole update. Taking and releasing the lock around each
+    // phase let other threads in between phases; holding it only removes interleavings.
+    std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
+    const size_t generated_before = impl_->generated_events;
     if (options.max_transitions_per_update == 0) {
         options.max_transitions_per_update = 1;
     }
@@ -1339,7 +1338,6 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
     std::vector<Event>& input_batch = impl_->input_batch;
     std::vector<Event>& initial_internal_batch = impl_->initial_internal_batch;
     {
-        std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
         auto owner_status = impl_->ensureOwnerBound();
         if (!owner_status.ok()) {
             result.status = owner_status;
@@ -1401,7 +1399,6 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
     }
 
     auto finish = [&]() {
-        std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
         impl_->update_in_progress = false;
         impl_->processing_region = false;
         result.lifecycle = impl_->lifecycle;
@@ -1589,7 +1586,6 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
     };
 
     {
-        std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
         const auto& top_regions = impl_->top_level_regions;
         for (size_t region_index = 0; region_index < top_regions.size(); ++region_index) {
             if (result.transitions_committed >= options.max_transitions_per_update) {
@@ -1716,7 +1712,6 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
     }
 
     {
-        std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
         if (impl_->stop_requested) {
             for (const StateMachine::Impl::RegionEntry* top : impl_->top_level_regions) {
                 auto status = impl_->exitRegion(top->config.id, nullptr);
@@ -1742,10 +1737,7 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         }
     }
 
-    {
-        std::lock_guard<std::mutex> inbox_lock(impl_->inbox_mutex);
-        result.generated_events = impl_->generated_events - generated_before;
-    }
+    result.generated_events = impl_->generated_events - generated_before;
     impl_->visible_base.clear();
     impl_->visible_with_internal.clear();
     return finish();
