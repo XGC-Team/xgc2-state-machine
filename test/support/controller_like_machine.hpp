@@ -91,6 +91,7 @@ struct Flags {
     bool take_off_abort{false};
     bool toggle{false}; // flips every tick in the "transitions" scenario
     int internal_every{0};
+    sm::EventId safety_event{0}; // posted once by the health state, then cleared
     int setpoint_every{5};
     int tick{0};
     double now{0.0};
@@ -113,6 +114,12 @@ class HealthMonitor final : public NamedState {
         if (flags_.internal_every > 0 && flags_.tick % flags_.internal_every == 0) {
             sm::Event event(input_event::kUnusedSafety, sm::EventTimestamp{flags_.now});
             event.source = "health";
+            ctx.postInternalEvent(std::move(event));
+        }
+        if (flags_.safety_event != 0) {
+            sm::Event event(flags_.safety_event, sm::EventTimestamp{flags_.now});
+            event.source = "health";
+            flags_.safety_event = 0;
             ctx.postInternalEvent(std::move(event));
         }
         return {};
@@ -164,9 +171,10 @@ class DebugMonitor final : public NamedState {
     Flags& flags_;
 };
 
-inline std::unique_ptr<sm::StateMachine> buildControllerLikeMachine(Flags& f) {
+inline std::unique_ptr<sm::StateMachine>
+buildControllerLikeMachine(Flags& f, std::shared_ptr<sm::Clock> clock = std::make_shared<sm::SteadyClock>()) {
     using namespace state_id;
-    auto builder = sm::StateMachine::builder("FlightStateMachine");
+    auto builder = sm::StateMachine::builder("FlightStateMachine", sm::RuntimeOptions{}, std::move(clock));
     builder.region(region_id::kHealth)
         .name("health")
         .order(0)

@@ -102,6 +102,18 @@ if(XGC2_STATE_MACHINE_BUILD_TESTING)
         COMMAND async_task_executor_test ${_case})
       set_tests_properties(async_task_executor_${_case} PROPERTIES TIMEOUT 15)
     endforeach()
+
+    # Replays seeded scenarios and compares every observable output with a
+    # golden file recorded from the revision before the per-tick optimizations.
+    add_executable(state_machine_equivalence_test test/state_machine_equivalence_test.cpp)
+    target_include_directories(state_machine_equivalence_test PRIVATE test)
+    target_link_libraries(state_machine_equivalence_test
+      PRIVATE xgc2_state_machine::state_machine Threads::Threads
+    )
+    add_test(NAME state_machine_equivalence_test
+      COMMAND state_machine_equivalence_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/golden/state_machine_equivalence.golden)
+    set_tests_properties(state_machine_equivalence_test PROPERTIES TIMEOUT 120)
   endif()
 endif()
 
