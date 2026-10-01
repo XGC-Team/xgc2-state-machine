@@ -127,7 +127,9 @@ struct StateMachine::Impl {
     std::vector<ProcessedEventRecord> current_events;
     std::vector<EventTraceRecord> current_trace;
     std::vector<Event> current_output_events;
-    std::vector<InternalEventEntry> current_internal_events;
+    // Callbacks receive pointers into this container (ctx.event(), onEvent) and may post
+    // more internal events while holding them; a deque keeps existing elements in place.
+    std::deque<InternalEventEntry> current_internal_events;
     bool processing_region{false};
     size_t current_region_index{0};
     size_t internal_event_first_visible_region_index{0};

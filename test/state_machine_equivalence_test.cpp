@@ -20,14 +20,13 @@
 //                      update options; stored as checkpoint hashes.
 //
 // Usage:
-//   state_machine_equivalence_test <golden>            verify (what ctest runs)
-//   state_machine_equivalence_test --update <golden>   rewrite the golden file
-//   state_machine_equivalence_test [options] --dump <scenario>
-//       prints the full text trace of controller_flight, random.N or seed:S;
-//       options: --steps N, --hashes (one hash per step instead of the text),
-//       and --full or any of --internal-anywhere --interleaved-rules
-//       --many-tasks to lift the restrictions described at struct Restrictions,
-//       for comparing two builds of the library by hand (diff the output).
+//   state_machine_equivalence_test [restrictions] <golden>            verify (ctest)
+//   state_machine_equivalence_test [restrictions] --update <golden>   rewrite it
+//   state_machine_equivalence_test [restrictions] [--steps N] [--hashes] --dump <scenario>
+//       prints the full text trace of controller_flight, random.N or seed:S, or
+//       with --hashes one hash per step; diff two builds of the library by hand
+// restrictions: --full or any of --internal-anywhere --interleaved-rules
+// --many-tasks lift the restrictions described at struct Restrictions.
 
 #include "support/controller_like_machine.hpp"
 
@@ -1286,16 +1285,19 @@ std::string rtrim(std::string text) {
     return text;
 }
 
-std::vector<std::string> computeGolden() {
+std::vector<std::string> computeGolden(const Restrictions& restrictions) {
     std::vector<std::string> lines;
     lines.emplace_back("# xgc2 state_machine equivalence golden v1; regenerate with --update");
+    lines.push_back(fmt("# restrictions tick_only_internal=%d grouped_rules=%d single_task=%d",
+                        restrictions.tick_only_internal ? 1 : 0, restrictions.grouped_rules ? 1 : 0,
+                        restrictions.single_task ? 1 : 0));
     const FlightRun flight = runControllerFlight(false);
     lines.emplace_back("[controller_flight]");
     lines.insert(lines.end(), flight.summary.begin(), flight.summary.end());
     lines.push_back(fmt("full_hash 0x%016llx", ull(flight.full_hash)));
     const std::vector<std::uint64_t> seeds = randomSeeds();
     for (std::size_t i = 0; i < seeds.size(); ++i) {
-        RandomDriver driver(seeds[i], Restrictions{}, kRandomSteps, kCheckpointEvery, false);
+        RandomDriver driver(seeds[i], restrictions, kRandomSteps, kCheckpointEvery, false);
         const RandomRun run = driver.run();
         lines.push_back(fmt("[random.%zu seed=%llu steps=%d]", i + 1, ull(seeds[i]), kRandomSteps));
         lines.insert(lines.end(), run.checkpoints.begin(), run.checkpoints.end());
@@ -1317,13 +1319,13 @@ bool readLines(const std::string& path, std::vector<std::string>& lines) {
     return true;
 }
 
-int verify(const std::string& path) {
+int verify(const std::string& path, const Restrictions& restrictions) {
     std::vector<std::string> expected;
     if (!readLines(path, expected)) {
         std::fprintf(stderr, "cannot read golden file %s\n", path.c_str());
         return 2;
     }
-    const std::vector<std::string> actual = computeGolden();
+    const std::vector<std::string> actual = computeGolden(restrictions);
     const std::size_t common = std::min(expected.size(), actual.size());
     for (std::size_t i = 0; i < common; ++i) {
         if (expected[i] != actual[i]) {
@@ -1340,8 +1342,8 @@ int verify(const std::string& path) {
     return 0;
 }
 
-int writeGolden(const std::string& path) {
-    const std::vector<std::string> lines = computeGolden();
+int writeGolden(const std::string& path, const Restrictions& restrictions) {
+    const std::vector<std::string> lines = computeGolden(restrictions);
     std::ofstream out(path);
     if (!out) {
         std::fprintf(stderr, "cannot write %s\n", path.c_str());
@@ -1418,13 +1420,13 @@ int main(int argc, char** argv) {
         }
     }
     if (args.size() == 2 && args[0] == "--update") {
-        return writeGolden(args[1]);
+        return writeGolden(args[1], restrictions);
     }
     if (args.size() == 2 && args[0] == "--dump") {
         return dump(args[1], restrictions, steps, hashes_only);
     }
     if (args.size() == 1) {
-        return verify(args[0]);
+        return verify(args[0], restrictions);
     }
     std::fprintf(stderr,
                  "usage: %s <golden> | --update <golden> |\n"

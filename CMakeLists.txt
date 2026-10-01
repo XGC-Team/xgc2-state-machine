@@ -114,6 +114,13 @@ if(XGC2_STATE_MACHINE_BUILD_TESTING)
       COMMAND state_machine_equivalence_test
         ${CMAKE_CURRENT_SOURCE_DIR}/test/golden/state_machine_equivalence.golden)
     set_tests_properties(state_machine_equivalence_test PROPERTIES TIMEOUT 120)
+    # The same scenarios with callbacks posting internal events from every
+    # callback kind; recorded after the per-tick internal event storage was made
+    # address-stable (before that it was undefined behaviour).
+    add_test(NAME state_machine_equivalence_internal_anywhere_test
+      COMMAND state_machine_equivalence_test --internal-anywhere
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/golden/state_machine_equivalence_internal_anywhere.golden)
+    set_tests_properties(state_machine_equivalence_internal_anywhere_test PROPERTIES TIMEOUT 120)
   endif()
 endif()
 

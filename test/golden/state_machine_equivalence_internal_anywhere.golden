@@ -1,0 +1,486 @@
+# xgc2 state_machine equivalence golden v1; regenerate with --update
+# restrictions tick_only_internal=0 grouped_rules=1 single_task=1
+[controller_flight]
+00 start -> 0:'' | 1:[100,] 2:[1,] 3:[101,] 2147483648:[] 2147483649:[]
+     processed:
+     outputs:
+01 update {status=0:'' taken=0 processed=0 remaining=0 transitions=1 generated=1 faults=0 evlimit=0 trlimit=0 lc=1} -> 0:'' | 1:[100,] 2:[8,2,] 3:[101,] 2147483648:[2,] 2147483649:[]
+     processed: 0@2:1>8(t1)
+     outputs: 10009
+02 update {status=0:'' taken=0 processed=0 remaining=0 transitions=0 generated=1 faults=0 evlimit=0 trlimit=0 lc=1} -> 0:'' | 1:[100,] 2:[8,2,] 3:[101,] 2147483648:[2,] 2147483649:[]
+     processed:
+     outputs: 10009
+03 post pose -> 0:'' | 1:[100,] 2:[8,2,] 3:[101,] 2147483648:[2,] 2147483649:[]
+04 post imu -> 0:'' | 1:[100,] 2:[8,2,] 3:[101,] 2147483648:[2,] 2147483649:[]
+05 post estimate -> 0:'' | 1:[100,] 2:[8,2,] 3:[101,] 2147483648:[2,] 2147483649:[]
+06 update with sensor events {status=0:'' taken=3 processed=12 remaining=0 transitions=0 generated=1 faults=0 evlimit=0 trlimit=0 lc=1} -> 0:'' | 1:[100,] 2:[8,2,] 3:[101,] 2147483648:[2,] 2147483649:[]
+     processed: 50@1:100>100 52@1:100>100 63@1:100>100 50@2:8>8 50@2:2>2 52@2:8>8 52@2:2>2 63@2:8>8 63@2:2>2 50@3:101>101 52@3:101>101 63@3:101>101
+     outputs: 10009
+07 post takeoff -> 0:'' | 1:[100,] 2:[8,2,] 3:[101,] 2147483648:[2,] 2147483649:[]
+08 takeoff {status=0:'' taken=1 processed=3 remaining=0 transitions=1 generated=1 faults=0 evlimit=0 trlimit=0 lc=1} -> 0:'' | 1:[100,] 2:[8,10,3,] 3:[101,] 2147483648:[10,3,] 2147483649:[3,]
+     processed: 1@1:100>100 1@2:2>10(t4) 1@3:101>101
+     outputs: 10009
+09 settle {status=0:'' taken=0 processed=0 remaining=0 transitions=0 generated=1 faults=0 evlimit=0 trlimit=0 lc=1} -> 0:'' | 1:[100,] 2:[8,10,3,] 3:[101,] 2147483648:[10,3,] 2147483649:[3,]
+     processed:
+     outputs: 10009
+10 post altctl -> 0:'' | 1:[100,] 2:[8,10,3,] 3:[101,] 2147483648:[10,3,] 2147483649:[3,]
+11 altctl {status=0:'' taken=1 processed=3 remaining=0 transitions=1 generated=2 faults=0 evlimit=0 trlimit=0 lc=1} -> 0:'' | 1:[100,] 2:[8,10,4,] 3:[101,] 2147483648:[10,4,] 2147483649:[4,]
+     processed: 16@1:100>100 16@2:3>4(t10) 16@3:101>101
+     outputs: 10004 10009
+12 post offboard -> 0:'' | 1:[100,] 2:[8,10,4,] 3:[101,] 2147483648:[10,4,] 2147483649:[4,]
+13 offboard {status=0:'' taken=1 processed=3 remaining=0 transitions=1 generated=1 faults=0 evlimit=0 trlimit=0 lc=1} -> 0:'' | 1:[100,] 2:[8,10,5,] 3:[101,] 2147483648:[10,5,] 2147483649:[5,]
+     processed: 17@1:100>100 17@2:4>5(t11) 17@3:101>101
+     outputs: 10009
+14 post arm -> 0:'' | 1:[100,] 2:[8,10,5,] 3:[101,] 2147483648:[10,5,] 2147483649:[5,]
+15 arm {status=0:'' taken=1 processed=3 remaining=0 transitions=1 generated=1 faults=0 evlimit=0 trlimit=0 lc=1} -> 0:'' | 1:[100,] 2:[8,10,6,] 3:[101,] 2147483648:[10,6,] 2147483649:[6,]
+     processed: 18@1:100>100 18@2:5>6(t12) 18@3:101>101
+     outputs: 10009
+16 post altitude -> 0:'' | 1:[100,] 2:[8,10,6,] 3:[101,] 2147483648:[10,6,] 2147483649:[6,]
+17 hover {status=0:'' taken=1 processed=3 remaining=0 transitions=1 generated=2 faults=0 evlimit=0 trlimit=0 lc=1} -> 0:'' | 1:[100,] 2:[8,7,] 3:[101,] 2147483648:[7,] 2147483649:[]
+     processed: 10@1:100>100 10@2:6>7(t13) 10@3:101>101
+     outputs: 10004 10009
+18 post tracking -> 0:'' | 1:[100,] 2:[8,7,] 3:[101,] 2147483648:[7,] 2147483649:[]
+19 tracking {status=0:'' taken=1 processed=3 remaining=0 transitions=1 generated=1 faults=0 evlimit=0 trlimit=0 lc=1} -> 0:'' | 1:[100,] 2:[8,11,] 3:[101,] 2147483648:[11,] 2147483649:[]
+     processed: 6@1:100>100 6@2:7>11(t21) 6@3:101>101
+     outputs: 10009
+20 post mpc -> 0:'' | 1:[100,] 2:[8,11,] 3:[101,] 2147483648:[11,] 2147483649:[]
+21 post vrpn -> 0:'' | 1:[100,] 2:[8,11,] 3:[101,] 2147483648:[11,] 2147483649:[]
+22 post mpc -> 0:'' | 1:[100,] 2:[8,11,] 3:[101,] 2147483648:[11,] 2147483649:[]
+23 post vrpn -> 0:'' | 1:[100,] 2:[8,11,] 3:[101,] 2147483648:[11,] 2147483649:[]
+24 post mpc -> 0:'' | 1:[100,] 2:[8,11,] 3:[101,] 2147483648:[11,] 2147483649:[]
+25 post vrpn -> 0:'' | 1:[100,] 2:[8,11,] 3:[101,] 2147483648:[11,] 2147483649:[]
+26 post mpc -> 0:'' | 1:[100,] 2:[8,11,] 3:[101,] 2147483648:[11,] 2147483649:[]
+27 post vrpn -> 0:'' | 1:[100,] 2:[8,11,] 3:[101,] 2147483648:[11,] 2147483649:[]
+28 post mpc -> 0:'' | 1:[100,] 2:[8,11,] 3:[101,] 2147483648:[11,] 2147483649:[]
+29 post vrpn -> 0:'' | 1:[100,] 2:[8,11,] 3:[101,] 2147483648:[11,] 2147483649:[]
+30 post mpc -> 0:'' | 1:[100,] 2:[8,11,] 3:[101,] 2147483648:[11,] 2147483649:[]
+31 post vrpn -> 0:'' | 1:[100,] 2:[8,11,] 3:[101,] 2147483648:[11,] 2147483649:[]
+32 limited to 5 events {status=0:'' taken=5 processed=10 remaining=7 transitions=1 generated=1 faults=0 evlimit=1 trlimit=0 lc=1} -> 0:'' | 1:[100,] 2:[8,7,] 3:[101,] 2147483648:[7,] 2147483649:[]
+     processed: 57@1:100>100 55@1:100>100 57@1:100>100 55@1:100>100 57@1:100>100 0@2:11>7(t25) 57@3:101>101 55@3:101>101 57@3:101>101 55@3:101>101 57@3:101>101
+     outputs: 10009
+33 limited to 5 events {status=0:'' taken=5 processed=20 remaining=2 transitions=0 generated=2 faults=0 evlimit=1 trlimit=0 lc=1} -> 0:'' | 1:[100,] 2:[8,7,] 3:[101,] 2147483648:[7,] 2147483649:[]
+     processed: 55@1:100>100 57@1:100>100 55@1:100>100 57@1:100>100 55@1:100>100 55@2:8>8 55@2:7>7 57@2:8>8 57@2:7>7 55@2:8>8 55@2:7>7 57@2:8>8 57@2:7>7 55@2:8>8 55@2:7>7 55@3:101>101 57@3:101>101 55@3:101>101 57@3:101>101 55@3:101>101
+     outputs: 10004 10009
+34 drain {status=0:'' taken=2 processed=8 remaining=0 transitions=0 generated=1 faults=0 evlimit=0 trlimit=0 lc=1} -> 0:'' | 1:[100,] 2:[8,7,] 3:[101,] 2147483648:[7,] 2147483649:[]
+     processed: 57@1:100>100 55@1:100>100 57@2:8>8 57@2:7>7 55@2:8>8 55@2:7>7 57@3:101>101 55@3:101>101
+     outputs: 10009
+35 health posts an unused internal event {status=0:'' taken=0 processed=4 remaining=0 transitions=0 generated=2 faults=0 evlimit=0 trlimit=0 lc=1} -> 0:'' | 1:[100,] 2:[8,7,] 3:[101,] 2147483648:[7,] 2147483649:[]
+     processed: 30@1:100>100 30@2:8>8 30@2:7>7 30@3:101>101
+     outputs: 10009
+36 health posts an unused internal event {status=0:'' taken=0 processed=0 remaining=0 transitions=0 generated=2 faults=0 evlimit=0 trlimit=0 lc=1} -> 0:'' | 1:[100,] 2:[8,7,] 3:[101,] 2147483648:[7,] 2147483649:[]
+     processed:
+     outputs: 10004 10009
+37 geofence violation {status=0:'' taken=0 processed=3 remaining=0 transitions=1 generated=2 faults=0 evlimit=0 trlimit=0 lc=1} -> 0:'' | 1:[100,] 2:[9,] 3:[101,] 2147483648:[] 2147483649:[]
+     processed: 40@1:100>100 40@2:7>9(t27) 40@3:101>101
+     outputs: 10009
+38 landing {status=0:'' taken=0 processed=0 remaining=0 transitions=0 generated=1 faults=0 evlimit=0 trlimit=0 lc=1} -> 0:'' | 1:[100,] 2:[9,] 3:[101,] 2147483648:[] 2147483649:[]
+     processed:
+     outputs: 10009
+39 post touchdown -> 0:'' | 1:[100,] 2:[9,] 3:[101,] 2147483648:[] 2147483649:[]
+40 touchdown {status=0:'' taken=1 processed=3 remaining=0 transitions=1 generated=2 faults=0 evlimit=0 trlimit=0 lc=1} -> 0:'' | 1:[100,] 2:[1,] 3:[101,] 2147483648:[] 2147483649:[]
+     processed: 13@1:100>100 13@2:9>1(t39) 13@3:101>101
+     outputs: 10004 10009
+41 post takeoff while too far -> 0:'' | 1:[100,] 2:[1,] 3:[101,] 2147483648:[] 2147483649:[]
+42 takeoff rejected by guard {status=0:'' taken=1 processed=2 remaining=0 transitions=1 generated=1 faults=0 evlimit=0 trlimit=0 lc=1} -> 0:'' | 1:[100,] 2:[8,2,] 3:[101,] 2147483648:[2,] 2147483649:[]
+     processed: 1@1:100>100 0@2:1>8(t1) 1@3:101>101
+     outputs: 10009
+43 no tick {status=0:'' taken=0 processed=0 remaining=0 transitions=0 generated=0 faults=0 evlimit=0 trlimit=0 lc=1} -> 0:'' | 1:[100,] 2:[8,2,] 3:[101,] 2147483648:[2,] 2147483649:[]
+     processed:
+     outputs:
+44 post takeoff again -> 0:'' | 1:[100,] 2:[8,2,] 3:[101,] 2147483648:[2,] 2147483649:[]
+45 one transition {status=0:'' taken=1 processed=2 remaining=0 transitions=1 generated=0 faults=0 evlimit=0 trlimit=1 lc=1} -> 0:'' | 1:[100,] 2:[8,10,3,] 3:[101,] 2147483648:[10,3,] 2147483649:[3,]
+     processed: 1@1:100>100 1@2:2>10(t4)
+     outputs:
+46 stop -> 0:'' | 1:[100,] 2:[8,10,3,] 3:[101,] 2147483648:[10,3,] 2147483649:[3,]
+47 exit all {status=0:'' taken=0 processed=0 remaining=0 transitions=0 generated=1 faults=0 evlimit=0 trlimit=0 lc=3} -> 0:'' | 1:[] 2:[] 3:[] 2147483648:[] 2147483649:[]
+     processed:
+     outputs: 10009
+48 after stop {status=6:'runtime is stopped' taken=0 processed=0 remaining=0 transitions=0 generated=0 faults=0 evlimit=0 trlimit=0 lc=3} -> 6:'runtime is stopped' | 1:[] 2:[] 3:[] 2147483648:[] 2147483649:[]
+     processed:
+     outputs: 10009
+49 post after stop -> 6:'event rejected by lifecycle' | 1:[] 2:[] 3:[] 2147483648:[] 2147483649:[]
+full_hash 0xe817306635d2951f
+[random.1 seed=7919 steps=700]
+step 50 hash 0x727e2f275da063e9
+step 100 hash 0xd0ccb0f5eef7bb00
+step 150 hash 0xccffa9d9c88d1292
+step 200 hash 0xc416d8cd244770e2
+step 250 hash 0x848ce74507dabe20
+step 300 hash 0x8c91b182a7ba4c23
+step 350 hash 0xe0338328f24a9781
+step 400 hash 0x6fe6e813ddd7682f
+step 450 hash 0x8a3c5b6fe0b56258
+step 500 hash 0xd20b8aa763a8ff75
+step 550 hash 0x2bc0f60e63d21846
+step 600 hash 0x66239c172ee2a2af
+step 650 hash 0xab7811a3037d490d
+step 700 hash 0xb817460acab60ad4
+final 0xb817460acab60ad4 callbacks 1787
+[random.2 seed=15838 steps=700]
+step 50 hash 0x523212878c53bfe0
+step 100 hash 0xfe558dc07e73bbbd
+step 150 hash 0xc405e232c01133d8
+step 200 hash 0xa360947f8caa64d0
+step 250 hash 0x6ae6d0a4421cf156
+step 300 hash 0x8da0c106e6185237
+step 350 hash 0x003385f7b41c2c69
+step 400 hash 0x1b93228504ab7bb1
+step 450 hash 0x3379bde08a566b1e
+step 500 hash 0x8d35e2bc8ff11a61
+step 550 hash 0x251cf67808b1c460
+step 600 hash 0xef1a994ef7d11a94
+step 650 hash 0x47270cce120f44e9
+step 700 hash 0x8ab76c4b585a41a3
+final 0x8ab76c4b585a41a3 callbacks 2064
+[random.3 seed=23757 steps=700]
+step 50 hash 0xcc2c0fb115c742fa
+step 100 hash 0xab58a8daf75de4a5
+step 150 hash 0x1aa703fdeb53247e
+step 200 hash 0xc5b45633ddc06e5e
+step 250 hash 0x411ce1443244207c
+step 300 hash 0x32c633ffac856f52
+step 350 hash 0x0e05e9720746938d
+step 400 hash 0x0bff7e1dd6536f5f
+step 450 hash 0x89f9a0f9beb79b85
+step 500 hash 0x4b9f0486e2105fc0
+step 550 hash 0x4e049a36a920b754
+step 600 hash 0x56f182c09330ea1f
+step 650 hash 0xa2db6038295fc3c3
+step 700 hash 0x513aed519a58a12a
+final 0x513aed519a58a12a callbacks 1150
+[random.4 seed=31676 steps=700]
+step 50 hash 0x7bd6ac65c6df7ac7
+step 100 hash 0xa2450d317e6e0110
+step 150 hash 0xef727959586d3836
+step 200 hash 0x1477a374108f2ae8
+step 250 hash 0xea4a1b6e4b906f1e
+step 300 hash 0x75331acbb79f9b2d
+step 350 hash 0x57bd48fa7af457eb
+step 400 hash 0x064698db3560b70c
+step 450 hash 0x73a7a4cb95a7b63b
+step 500 hash 0xf807349a887d2e58
+step 550 hash 0xeb1c879e88dfdf8c
+step 600 hash 0x440ce3b11010d685
+step 650 hash 0xaf666676b5112a98
+step 700 hash 0x3bf1b518d37bc9dc
+final 0x3bf1b518d37bc9dc callbacks 1256
+[random.5 seed=39595 steps=700]
+step 50 hash 0x238be13414a270b2
+step 100 hash 0x4dc863631cf8a1ff
+step 150 hash 0x2e3433d82d045093
+step 200 hash 0xf7640c4063e70e0a
+step 250 hash 0xcdcfbe2cd8e840a3
+step 300 hash 0x1ce70d28bde8a115
+step 350 hash 0x91ab8215c066dda3
+step 400 hash 0xb3f66d6bd3cd6e81
+step 450 hash 0x94fee3ab09125235
+step 500 hash 0x92d46ec7ded90e0b
+step 550 hash 0xe2db4cb0560e0c76
+step 600 hash 0xdc11920ab8b4a473
+step 650 hash 0x04d6037cabacc6e6
+step 700 hash 0xf6958c11da7529f6
+final 0xf6958c11da7529f6 callbacks 1581
+[random.6 seed=47514 steps=700]
+step 50 hash 0x80f1e5bebc15b96a
+step 100 hash 0x5beccd4acefe4ee1
+step 150 hash 0x5ba231e69fd64469
+step 200 hash 0x67b2b38491e9ad4b
+step 250 hash 0x44867b778799c98b
+step 300 hash 0x3f78c297fbaec03f
+step 350 hash 0xdb55a449f20e75e9
+step 400 hash 0x08218fa929601e65
+step 450 hash 0xa91177412fdda9f2
+step 500 hash 0xf5cee164898a8b5e
+step 550 hash 0x5589ce6b66f4d4fa
+step 600 hash 0x122b2cf2fffc82c2
+step 650 hash 0x214ac4178fde46de
+step 700 hash 0xd8a9b7b8900efc1e
+final 0xd8a9b7b8900efc1e callbacks 1595
+[random.7 seed=55433 steps=700]
+step 50 hash 0x3875a5f321d6ae7e
+step 100 hash 0x983cbfa3c11a77f6
+step 150 hash 0xba8457b297696fd1
+step 200 hash 0x2bde56c263372777
+step 250 hash 0xbeb5ff025b77517b
+step 300 hash 0x0377acc1ae1ef401
+step 350 hash 0x60ac3553699c6d40
+step 400 hash 0x60daf1584bcf7aa1
+step 450 hash 0xa09a9bd6a3bd4dc6
+step 500 hash 0xf43633674d3e1bcc
+step 550 hash 0x163c77325cc76055
+step 600 hash 0xa3751cd8f268c00b
+step 650 hash 0x0d910a642fd37dc0
+step 700 hash 0x65f48dc03e5960ab
+final 0x65f48dc03e5960ab callbacks 1456
+[random.8 seed=63352 steps=700]
+step 50 hash 0x9baeeee6d10f9d5a
+step 100 hash 0xa39bb419cee6416c
+step 150 hash 0x101876bbf53eea07
+step 200 hash 0xdcd6771f3ae93ee6
+step 250 hash 0xc55e0c5d400202fe
+step 300 hash 0x18a292931d10a5e0
+step 350 hash 0x929dda78edf575dc
+step 400 hash 0x38a1c4372998e262
+step 450 hash 0x26093fbd96eb15bb
+step 500 hash 0x06ad8d694c730b07
+step 550 hash 0x4a7f38cb5d24c6d9
+step 600 hash 0xebb8ca41e546dad1
+step 650 hash 0x46006a56f4258163
+step 700 hash 0xddce238dd0634de0
+final 0xea1047eae4dde12a callbacks 2151
+[random.9 seed=71271 steps=700]
+step 50 hash 0x24164f979c673cd8
+step 100 hash 0xbc3e79bcddbd2aac
+step 150 hash 0x7d9448b5ac6c9b1b
+step 200 hash 0x9461e57bcfb93fcb
+step 250 hash 0x3b2efffef246a726
+step 300 hash 0xfb3588e907027447
+step 350 hash 0x9e7484476a922fd1
+step 400 hash 0xdd53dbe994c40cc8
+step 450 hash 0xc1f11626876a6701
+step 500 hash 0xeacac3c4c1e696a4
+step 550 hash 0xa064d9aab6aa8e7c
+step 600 hash 0xc3c96a5954231957
+step 650 hash 0x2e10c36eabf6b82e
+step 700 hash 0x47f45618f1da61cf
+final 0x47f45618f1da61cf callbacks 1768
+[random.10 seed=79190 steps=700]
+step 50 hash 0x2f2687d7e408eea5
+step 100 hash 0x4da7c2bc3e2e50bb
+step 150 hash 0xb190d319a13c7171
+step 200 hash 0xabd21ea5d16d2bd1
+step 250 hash 0xd762c19b3ba26674
+step 300 hash 0x9d113d2e2080f7b6
+step 350 hash 0x51da3409b9b191e2
+step 400 hash 0x499c6aca394112ab
+step 450 hash 0xd672d47eb094697b
+step 500 hash 0x121dfed756e7636d
+step 550 hash 0xc742c44cfd934b19
+step 600 hash 0x4d17e2d8306ed21f
+step 650 hash 0x29ab62e497d7d208
+step 700 hash 0x507b49a9715f9b1d
+final 0x507b49a9715f9b1d callbacks 1710
+[random.11 seed=87109 steps=700]
+step 50 hash 0x4858a63840d324a4
+step 100 hash 0xc22752988d3d4ec1
+step 150 hash 0xa3cfc5ad51e95470
+step 200 hash 0x66c104f4a247e30d
+step 250 hash 0xd06766f6b8811b0d
+step 300 hash 0xbb8fe236f69dad4b
+step 350 hash 0xcfe14d9143cce8b6
+step 400 hash 0x7691db1f98957c09
+step 450 hash 0x450d7b8e398608b7
+step 500 hash 0xbc6a2e2f19bb020b
+step 550 hash 0xa0a1a9201438aa2b
+step 600 hash 0x6df9c7a1ec5aba14
+step 650 hash 0xdd8370baa9c39f54
+step 700 hash 0x991f926be5deaa5c
+final 0x991f926be5deaa5c callbacks 1006
+[random.12 seed=95028 steps=700]
+step 50 hash 0xc1492db886f01ec1
+step 100 hash 0x7bce6f7ffdc99667
+step 150 hash 0xbb6b7a892f5ff1ae
+step 200 hash 0x5e47bc028605e505
+step 250 hash 0xce7f27c4d9328c1e
+step 300 hash 0x6ace3ad5189263ff
+step 350 hash 0xd7199ea58f03ee91
+step 400 hash 0x92b60e4e26ed46f1
+step 450 hash 0x05213d6909898b50
+step 500 hash 0x2591cc98904d7f15
+step 550 hash 0x4013cef93dd09497
+step 600 hash 0x78db264e284aa20f
+step 650 hash 0x83b5027fcdffe04d
+step 700 hash 0x6e6cc0ee2195aeed
+final 0x6e6cc0ee2195aeed callbacks 1485
+[random.13 seed=102947 steps=700]
+step 50 hash 0x5a93b61c0832059b
+step 100 hash 0x98690c15d6a68707
+step 150 hash 0xb0c2c9b47fbcb5f8
+step 200 hash 0x84869186190883c7
+step 250 hash 0xc5cbcd0b979646b8
+step 300 hash 0x396f464ef07ebc5a
+step 350 hash 0x570204ec6c1f8c84
+step 400 hash 0x553b6ed205355886
+step 450 hash 0x09a685b98cc36769
+step 500 hash 0x07acefdacbadb6d1
+step 550 hash 0x648bf75735cce70e
+step 600 hash 0x16a6c3558307543c
+step 650 hash 0xe16d69589d38a573
+step 700 hash 0x8a9de738923705a7
+final 0x8a9de738923705a7 callbacks 1939
+[random.14 seed=110866 steps=700]
+step 50 hash 0x95bf9d4a90e409f4
+step 100 hash 0x9c4c29d53f888eb2
+step 150 hash 0x542fdb4af437cd4e
+step 200 hash 0x219c96aa9327ff70
+step 250 hash 0x5c86e9846ad048fb
+step 300 hash 0x522d5d844cfec22d
+step 350 hash 0xeeb7909a435e43e1
+step 400 hash 0xe1ee39f1c429a491
+step 450 hash 0xc7aefc415f5a0b7d
+step 500 hash 0xfe7ffa3f373c6cce
+step 550 hash 0x75b7e8688b1fed64
+step 600 hash 0xddf5f84c5bb87f8d
+step 650 hash 0xef8a32773a1a2824
+step 700 hash 0xefa6487ff9bb76e1
+final 0xefa6487ff9bb76e1 callbacks 1178
+[random.15 seed=118785 steps=700]
+step 50 hash 0xf15b9040276e7272
+step 100 hash 0x38f2c43ef6bc0c9a
+step 150 hash 0xea75c4eb9bf824a5
+step 200 hash 0x97999e3a79edd023
+step 250 hash 0xfc81bc28c4d91286
+step 300 hash 0xaa1b71a34fcce966
+step 350 hash 0x66e8ae590788e585
+step 400 hash 0xacdcc0255af113e9
+step 450 hash 0x47310c16198a7bfe
+step 500 hash 0xaccf3bae5447cba3
+step 550 hash 0xd1187746ad5e1269
+step 600 hash 0x683b230a050db9c8
+step 650 hash 0x41247ec71361156a
+step 700 hash 0xa11b3585b715c28f
+final 0xa11b3585b715c28f callbacks 2140
+[random.16 seed=126704 steps=700]
+step 50 hash 0x693b4cd489fc986e
+step 100 hash 0x8dce17a570613811
+step 150 hash 0xab8993059a20f510
+step 200 hash 0x634f17330fcec3b6
+step 250 hash 0x30c8142ec99dac69
+step 300 hash 0xc48c31e0ea8803ed
+step 350 hash 0xc773fbd1a37edfda
+step 400 hash 0x2535ffd28b5c08d9
+step 450 hash 0xd023f3467f0ff890
+step 500 hash 0xd3a04aec218bdc66
+step 550 hash 0x4d3014415e955e47
+step 600 hash 0x4c9ddb698f7e6cf3
+step 650 hash 0x741bccce5151efa2
+step 700 hash 0xc07217b01f0befce
+final 0xc07217b01f0befce callbacks 1439
+[random.17 seed=134623 steps=700]
+step 50 hash 0xb598f3ed5e4c6317
+step 100 hash 0xb8f442cbb0483f1f
+step 150 hash 0x605d91a4ab745d90
+step 200 hash 0x348a2146e8b57e49
+step 250 hash 0x1c3d0e2c1b4f7d19
+step 300 hash 0xdf0988a1504d207e
+step 350 hash 0xfd5983f4240b2a12
+step 400 hash 0x8029a7d3aec9ac94
+step 450 hash 0x2ff8b9372d1d0431
+step 500 hash 0xb9b978ca1bf59ac6
+step 550 hash 0x8f8f0d75a7728b71
+step 600 hash 0x8705e0eda757c998
+step 650 hash 0x581c4583e0fc731e
+step 700 hash 0x52a74cfdda880df7
+final 0x52a74cfdda880df7 callbacks 1986
+[random.18 seed=142542 steps=700]
+step 50 hash 0x8c8dd479b64ad093
+step 100 hash 0x483b9b42ae70e051
+step 150 hash 0xdb0a037e8835f7cc
+step 200 hash 0x440a6ea8b7bf2968
+step 250 hash 0xa4836df6ed92a6b9
+step 300 hash 0xd33737911507eab1
+step 350 hash 0x322e0910a3b15fae
+step 400 hash 0xc90a5b309b20522b
+step 450 hash 0xa278cb5c84f4dbe5
+step 500 hash 0x0ffc5fe15f400e99
+step 550 hash 0x3ee517007e384408
+step 600 hash 0x3b1523c07f17aa71
+step 650 hash 0x48eb0ecec5785812
+step 700 hash 0xab5df1faceabe7f8
+final 0xab5df1faceabe7f8 callbacks 2131
+[random.19 seed=150461 steps=700]
+step 50 hash 0xe0a7a80f191ba804
+step 100 hash 0x28aa3d760f3ccf2d
+step 150 hash 0x995c93b593ac188c
+step 200 hash 0x6fccbf5493b1f513
+step 250 hash 0x3d31806a0d5c0380
+step 300 hash 0x8dbac0faf51c5ec8
+step 350 hash 0x3c5b4ef0c94a8da2
+step 400 hash 0x57059e6eae467845
+step 450 hash 0x6790590e04abee6b
+step 500 hash 0xbd5c9022b1799b24
+step 550 hash 0x84b3ae6a7c8dd13e
+step 600 hash 0x79e710ce9aed297f
+step 650 hash 0xbac9699c9dab3b46
+step 700 hash 0x156ef67c317cfb32
+final 0x156ef67c317cfb32 callbacks 1747
+[random.20 seed=158380 steps=700]
+step 50 hash 0xb86e808b5b8ebd7a
+step 100 hash 0xfaaf54af35b9945b
+step 150 hash 0x3235a1e5f27dce1e
+step 200 hash 0x31ded3c5269b0fcd
+step 250 hash 0x13916438343c6bd7
+step 300 hash 0xa3ed4461f15f0482
+step 350 hash 0x06df9c98664a528a
+step 400 hash 0x0b7ed0775defffb7
+step 450 hash 0x7551dafbca4659f0
+step 500 hash 0x2f130c8c16269895
+step 550 hash 0x8b2a7c5748cc72bb
+step 600 hash 0x56f4bc287fe9dcd8
+step 650 hash 0xa55788168431e489
+step 700 hash 0xdd8d6a83801c32e7
+final 0xdd8d6a83801c32e7 callbacks 1453
+[random.21 seed=166299 steps=700]
+step 50 hash 0x830b5744e16acc7d
+step 100 hash 0x6f442d88dadab9d0
+step 150 hash 0xbe6af6f1f985783e
+step 200 hash 0x0b8971bc3f3fd761
+step 250 hash 0x9e97c77c8d66e48b
+step 300 hash 0x26cbb114488fed92
+step 350 hash 0x7d71c167302c0cf9
+step 400 hash 0x7578ab5fd8dca2ab
+step 450 hash 0xfb28a85e68f67844
+step 500 hash 0xff0cfe9a4b26ebbb
+step 550 hash 0x81d43d71d48abcfe
+step 600 hash 0x7b9d6060efb5c86c
+step 650 hash 0xd5435605feaa9803
+step 700 hash 0x73bcbed8baa4d98f
+final 0x73bcbed8baa4d98f callbacks 1924
+[random.22 seed=174218 steps=700]
+step 50 hash 0xc0dafceaeb8a4821
+step 100 hash 0xc2eb894020304726
+step 150 hash 0xd5e2527851c56b6a
+step 200 hash 0xbd1b29473c4bcbd7
+step 250 hash 0xaf2e2f7713afd68d
+step 300 hash 0xe717b04e462a16dd
+step 350 hash 0x0faacb059b54e6ef
+step 400 hash 0x9f538faf2b94f02d
+step 450 hash 0x4718b4dc160c6102
+step 500 hash 0xf639c8f93b54ab82
+step 550 hash 0x488615b41d00ae75
+step 600 hash 0x2a315615dbd2fc1f
+step 650 hash 0x23157f26bb11bbcf
+step 700 hash 0x7071418c55545700
+final 0x7071418c55545700 callbacks 2124
+[random.23 seed=182137 steps=700]
+step 50 hash 0xd2d0cfc509f32945
+step 100 hash 0x88b9ea4b0a479480
+step 150 hash 0xbf5a7266759c499e
+step 200 hash 0xccf86cc79182c2fe
+step 250 hash 0x04b621d0ee2441d8
+step 300 hash 0x6d4d1df921207bd2
+step 350 hash 0x48404dfcf97aaf49
+step 400 hash 0xae25f986a0cb95ca
+step 450 hash 0x1df659014dea2104
+step 500 hash 0x713ca8f35372d3b8
+step 550 hash 0x14e865ba670c9048
+step 600 hash 0xb3c02c4963a2d75b
+step 650 hash 0xfc4e0a18364e3f57
+step 700 hash 0xf151172a179e8cf0
+final 0xf151172a179e8cf0 callbacks 1877
+[random.24 seed=190056 steps=700]
+step 50 hash 0x37b6514085299f73
+step 100 hash 0x6d3b43a82447bb6f
+step 150 hash 0x815b02713724ee14
+step 200 hash 0x4158f62e51d48008
+step 250 hash 0x266fcbd55d6af0f8
+step 300 hash 0x8232fc7853f900e9
+step 350 hash 0x729facda3291da4d
+step 400 hash 0x1be8129ee088479a
+step 450 hash 0xefcfa1af4871db00
+step 500 hash 0x8bc67f85c02c440f
+step 550 hash 0x3f92d5fe445f5a53
+step 600 hash 0x4da9af13a84664ba
+step 650 hash 0x310c2d577e300605
+step 700 hash 0x4147d38558695456
+final 0x4147d38558695456 callbacks 1249
