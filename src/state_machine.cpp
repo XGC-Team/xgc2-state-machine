@@ -15,9 +15,9 @@ namespace {
 
 constexpr RegionId kImplicitRegionBase = 0x80000000u;
 
-template <typename T> void pushBounded(std::deque<T>& buffer, const T& value, size_t capacity) {
+template <typename T> void pushBounded(std::deque<T>& buffer, T value, size_t capacity) {
     const size_t normalized = std::max<size_t>(capacity, 1);
-    buffer.push_back(value);
+    buffer.push_back(std::move(value));
     while (buffer.size() > normalized) {
         buffer.pop_front();
     }
@@ -195,7 +195,7 @@ struct StateMachine::Impl {
         return Status{};
     }
 
-    void log(const EventLogRecord& record) { pushBounded(event_log, record, options.event_log_capacity); }
+    void log(EventLogRecord record) { pushBounded(event_log, std::move(record), options.event_log_capacity); }
 
     void sortRegionOrder() {
         std::stable_sort(region_order.begin(), region_order.end(), [&](RegionId lhs, RegionId rhs) {
@@ -557,14 +557,14 @@ struct StateMachine::Impl {
             return Status::error(ErrorCode::kLimitReached, "pending event capacity reached");
         }
         event.sequence = next_event_sequence++;
-        inbox.push_back(event);
         ++generated_events;
         EventLogRecord record;
         record.kind = EventLogRecord::Kind::kEventEnqueued;
         record.sequence = event.sequence;
         record.event_id = event.id;
         record.message = event.source;
-        log(record);
+        inbox.push_back(std::move(event));
+        log(std::move(record));
         return Status{};
     }
 
@@ -572,12 +572,12 @@ struct StateMachine::Impl {
         event.category = EventCategory::kInternal;
         event.sequence = next_event_sequence++;
         ++generated_events;
-        EventTraceRecord trace;
+        current_trace.emplace_back();
+        EventTraceRecord& trace = current_trace.back();
         trace.kind = EventTraceRecord::Kind::kInternalEventGenerated;
         trace.event = event;
         trace.producer_region = producer.region;
         trace.producer_state = producer.state;
-        current_trace.push_back(trace);
         if (update_in_progress && processing_region) {
             current_internal_events.push_back(InternalEventEntry{std::move(event), producer.region, producer.state,
                                                                  internal_event_first_visible_region_index,
@@ -592,12 +592,12 @@ struct StateMachine::Impl {
         event.category = EventCategory::kOutput;
         event.sequence = next_event_sequence++;
         ++generated_events;
-        EventTraceRecord trace;
+        current_trace.emplace_back();
+        EventTraceRecord& trace = current_trace.back();
         trace.kind = EventTraceRecord::Kind::kOutputEventGenerated;
         trace.event = event;
         trace.producer_region = producer.region;
         trace.producer_state = producer.state;
-        current_trace.push_back(trace);
         current_output_events.push_back(std::move(event));
         return Status{};
     }
@@ -1518,7 +1518,8 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                 impl_->consumed_internal_sequences.push_back(event->sequence);
             }
         }
-        ProcessedEventRecord processed;
+        impl_->current_events.emplace_back();
+        ProcessedEventRecord& processed = impl_->current_events.back();
         if (event) {
             processed.event = *event;
         } else {
@@ -1531,9 +1532,9 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         processed.to_state = no_exit_enter ? from_leaf : to_state;
         processed.transition = rule.id;
         processed.priority = rule.priority;
-        impl_->current_events.push_back(processed);
 
-        EventTraceRecord trace;
+        impl_->current_trace.emplace_back();
+        EventTraceRecord& trace = impl_->current_trace.back();
         trace.kind = EventTraceRecord::Kind::kTransitionCommitted;
         trace.event = processed.event;
         trace.consumer_region = region_id;
@@ -1541,7 +1542,6 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         trace.to_state = processed.to_state;
         trace.transition = rule.id;
         trace.priority = rule.priority;
-        impl_->current_trace.push_back(trace);
 
         EventLogRecord record;
         record.kind = EventLogRecord::Kind::kTransitionCommitted;
@@ -1553,7 +1553,7 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         record.from_state = from_leaf;
         record.to_state = processed.to_state;
         record.transition = rule.id;
-        impl_->log(record);
+        impl_->log(std::move(record));
     };
 
     {
@@ -1650,20 +1650,20 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                             ++result.faults_recorded;
                         }
                         ++result.events_processed;
-                        ProcessedEventRecord processed;
+                        impl_->current_events.emplace_back();
+                        ProcessedEventRecord& processed = impl_->current_events.back();
                         processed.event = *event;
                         processed.region = region_id;
                         processed.from_state = state;
                         processed.to_state = state;
-                        impl_->current_events.push_back(processed);
 
-                        EventTraceRecord trace;
+                        impl_->current_trace.emplace_back();
+                        EventTraceRecord& trace = impl_->current_trace.back();
                         trace.kind = EventTraceRecord::Kind::kEventConsumed;
                         trace.event = *event;
                         trace.consumer_region = region_id;
                         trace.from_state = state;
                         trace.to_state = state;
-                        impl_->current_trace.push_back(trace);
                     }
                 }
             }
@@ -1678,12 +1678,12 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                 std::find(consumed.begin(), consumed.end(), entry.event.sequence) != consumed.end();
             if (!event_consumed &&
                 (entry.first_visible_region_index >= next_tick_index || entry.producer_region_index > 0)) {
-                EventTraceRecord trace;
+                impl_->current_trace.emplace_back();
+                EventTraceRecord& trace = impl_->current_trace.back();
                 trace.kind = EventTraceRecord::Kind::kInternalEventDeferred;
                 trace.event = entry.event;
                 trace.producer_region = entry.producer_region;
                 trace.producer_state = entry.producer_state;
-                impl_->current_trace.push_back(trace);
                 impl_->pending_internal_events.push_back(std::move(entry.event));
             }
         }
