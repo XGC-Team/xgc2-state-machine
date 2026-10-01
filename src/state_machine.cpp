@@ -81,6 +81,7 @@ struct StateMachine::Impl {
         // Derived from the configuration by rebuildDerived(); constant while running.
         std::vector<StateId> path_to_root;       // outermost ancestor first, this state last
         std::vector<RegionEntry*> child_regions; // regions owned by this state, in region_order
+        std::vector<TransitionRule*> rules;      // rules leaving this state, in evaluation order
     };
 
     struct RegionEntry {
@@ -262,7 +263,14 @@ struct StateMachine::Impl {
         }
         for (auto& entry : states) {
             entry.second.child_regions.clear();
+            entry.second.rules.clear();
             entry.second.path_to_root = computePathToRoot(entry.first);
+        }
+        for (TransitionRule& rule : transitions) {
+            const auto source = states.find(rule.from);
+            if (source != states.end()) {
+                source->second.rules.push_back(&rule);
+            }
         }
         for (const RegionId id : region_order) {
             const auto it = regions.find(id);
@@ -1560,9 +1568,9 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
             TransitionRule* selected_rule = nullptr;
             const Event* selected_event = nullptr;
             for (const StateMachine::Impl::StateEntry* entry : active) {
-                const StateId state = entry->config.id;
-                for (auto& rule : impl_->transitions) {
-                    if (rule.from != state || rule.region != region_id) {
+                for (TransitionRule* candidate : entry->rules) {
+                    TransitionRule& rule = *candidate;
+                    if (rule.region != region_id) {
                         continue;
                     }
                     if (rule.event) {
