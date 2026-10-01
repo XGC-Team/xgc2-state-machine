@@ -43,6 +43,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -112,6 +113,16 @@ unsigned long long ull(std::uint64_t value) {
     return static_cast<unsigned long long>(value);
 }
 
+std::uint64_t fnv1a(std::uint64_t hash, const std::string& text) {
+    for (const char c : text) {
+        hash ^= static_cast<unsigned char>(c);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+constexpr std::uint64_t kFnvOffset = 1469598103934665603ULL;
+
 // Every line that describes an observable is fed to a running FNV-1a hash.
 // note() additionally keeps the line, for the human-readable golden trace.
 class Observer {
@@ -131,9 +142,7 @@ class Observer {
 
   private:
     void feed(const std::string& text) {
-        for (const char c : text) {
-            mix(static_cast<unsigned char>(c));
-        }
+        hash_ = fnv1a(hash_, text);
         mix(static_cast<unsigned char>('\n'));
         if (keep_text_) {
             text_ += text;
@@ -146,7 +155,7 @@ class Observer {
         hash_ *= 1099511628211ULL;
     }
 
-    std::uint64_t hash_{1469598103934665603ULL};
+    std::uint64_t hash_{kFnvOffset};
     bool keep_text_{false};
     std::string text_;
     std::vector<std::string> summary_;
@@ -275,6 +284,24 @@ std::string describe(const sm::UpdateResult& result) {
 std::string describe(const sm::TaskHandle& handle) {
     return fmt("{id=%llu owner=%u region=%u corr=%llu at=%lld}", ull(handle.id), u(handle.owner_state),
                u(handle.owner_region), ull(handle.correlation_id), nanos(handle.started_at));
+}
+
+// A compact view of the per-update records, readable from inside callbacks while
+// the update that is filling them is still running.
+template <typename Records> std::uint64_t digestAll(const Records& records) {
+    return std::accumulate(records.begin(), records.end(), kFnvOffset, [](std::uint64_t hash, const auto& record) {
+        return fnv1a(hash, describe(record));
+    });
+}
+
+std::string digestCurrentRecords(const sm::StateMachine& machine) {
+    const auto processed = machine.currentEvents();
+    const auto trace = machine.currentTrace();
+    const auto outputs = machine.currentOutputEvents();
+    const auto log = machine.eventLog();
+    return fmt("processed=%zu:%016llx trace=%zu:%016llx outputs=%zu:%016llx log=%zu:%016llx", processed.size(),
+               ull(digestAll(processed)), trace.size(), ull(digestAll(trace)), outputs.size(), ull(digestAll(outputs)),
+               log.size(), ull(digestAll(log)));
 }
 
 // ---------------------------------------------------------------------------
@@ -457,6 +484,9 @@ sm::Status act(World& w, const Behavior& b, sm::StateContext& ctx, Tag tag, unsi
         w.obs.line(fmt("  query lc=%d upd=%llu inbox=%zu leaves=%s cur=%u elapsed=%lld gen=%zu now=%lld",
                        static_cast<int>(snapshot.lifecycle), ull(snapshot.update_index), snapshot.inbox_size,
                        leaves.c_str(), u(ctx.currentState(ctx.region())), elapsed, ctx.generatedEvents(), now));
+        if (w.machine != nullptr) {
+            w.obs.line("  mid " + digestCurrentRecords(*w.machine));
+        }
     }
     if (w.rng.chance(b.p_internal) && (!w.limits.tick_only_internal || tag == Tag::kTick || w.in_start)) {
         const sm::Status status = ctx.postInternalEvent(w.makeEvent());
@@ -642,6 +672,9 @@ std::function<bool(const sm::GuardContext&)> makeGuard(World& world_ref, unsigne
             const long long elapsed = nanos(guard.elapsed(10));
             world->obs.line(fmt("  guard_query lc=%d upd=%llu now=%lld elapsed=%lld",
                                 static_cast<int>(snapshot.lifecycle), ull(snapshot.update_index), now, elapsed));
+            if (world->machine != nullptr) {
+                world->obs.line("  mid " + digestCurrentRecords(*world->machine));
+            }
         }
         if (world->rng.chance(behavior.p_throw)) {
             world->obs.line("  guard_throw");
