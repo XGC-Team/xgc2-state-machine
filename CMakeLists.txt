@@ -5,6 +5,7 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 option(XGC2_STATE_MACHINE_BUILD_TESTING "Build xgc2_state_machine tests" ON)
+option(XGC2_STATE_MACHINE_BUILD_BENCHMARKS "Build xgc2_state_machine tick benchmarks" OFF)
 
 add_library(xgc2_state_machine SHARED
   src/state_machine.cpp
@@ -102,4 +103,11 @@ if(XGC2_STATE_MACHINE_BUILD_TESTING)
       set_tests_properties(async_task_executor_${_case} PROPERTIES TIMEOUT 15)
     endforeach()
   endif()
+endif()
+
+if(XGC2_STATE_MACHINE_BUILD_BENCHMARKS)
+  # Not installed and not part of the test suite: run by hand, see bench/.
+  add_executable(state_machine_tick_bench bench/state_machine_tick_bench.cpp)
+  target_include_directories(state_machine_tick_bench PRIVATE test/support)
+  target_link_libraries(state_machine_tick_bench PRIVATE xgc2_state_machine::state_machine)
 endif()
