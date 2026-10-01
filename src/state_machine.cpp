@@ -128,6 +128,7 @@ struct StateMachine::Impl {
     std::vector<RegionId> region_order;
     std::vector<RegionEntry*> top_level_regions; // regions without an owner state, in region_order
     uint64_t active_epoch{1};                    // bumped whenever any region's active leaf changes
+    bool derived_valid{false};                   // see ensureDerived()
     // Scratch buffers of update(), kept so that a steady-state tick allocates nothing.
     std::vector<const StateEntry*> update_chain;       // active states of the region being processed
     std::vector<Event> input_batch;                    // external events taken from the inbox
@@ -290,9 +291,20 @@ struct StateMachine::Impl {
         return it == states.end() ? kNoPath : it->second.path_to_root;
     }
 
-    // Recomputes everything that is derived from regions, states and transitions. The graph
-    // is only mutated while configuring, so the tables are constant once the machine runs.
+    // Everything derived from regions, states and transitions (top-level regions, child regions,
+    // paths to the root, rules per state) is built once, when the machine starts: the graph is
+    // only mutated while configuring, so the tables are constant once it runs. Each
+    // configuration step just marks them stale.
+    void markDerivedStale() { derived_valid = false; }
+
+    void ensureDerived() {
+        if (!derived_valid) {
+            rebuildDerived();
+        }
+    }
+
     void rebuildDerived() {
+        derived_valid = true;
         top_level_regions.clear();
         for (const RegionId id : region_order) {
             const auto it = regions.find(id);
@@ -1170,7 +1182,7 @@ Status StateMachine::addRegion(RegionConfig config) {
     impl_->regions[id] = std::move(entry);
     impl_->region_order.push_back(id);
     impl_->sortRegionOrder();
-    impl_->rebuildDerived();
+    impl_->markDerivedStale();
     return Status{};
 }
 
@@ -1199,7 +1211,7 @@ Status StateMachine::addState(StateConfig config, std::unique_ptr<State> state) 
     entry.config = config;
     entry.state = std::move(state);
     impl_->states[config.id] = std::move(entry);
-    impl_->rebuildDerived();
+    impl_->markDerivedStale();
     return Status{};
 }
 
@@ -1239,7 +1251,7 @@ Status StateMachine::addTransition(TransitionRule rule) {
         }
         return lhs.registration_order < rhs.registration_order;
     });
-    impl_->rebuildDerived();
+    impl_->markDerivedStale();
     return Status{};
 }
 
@@ -1263,6 +1275,7 @@ Status StateMachine::start() {
             return Status::error(ErrorCode::kInvalidArgument, "region initial state must be a direct child");
         }
     }
+    impl_->ensureDerived();
     impl_->lifecycle = MachineLifecycle::kRunning;
     for (const StateMachine::Impl::RegionEntry* region : impl_->top_level_regions) {
         status = impl_->enterRegionDefault(region->config.id, nullptr);
