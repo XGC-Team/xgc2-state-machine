@@ -576,6 +576,16 @@ struct StateMachine::Impl {
         return enterState(region_it->second.config.initial_state, event, true);
     }
 
+    // Scratch vectors keep their capacity from tick to tick, but one burst of events must not
+    // pin its memory for the life of the machine.
+    template <typename T> static void clearAndTrim(std::vector<T>& values) {
+        constexpr size_t kRetainedCapacity = 256;
+        values.clear();
+        if (values.capacity() > kRetainedCapacity) {
+            std::vector<T>().swap(values);
+        }
+    }
+
     // A copy of the event a reference stands for.
     Event eventOf(const EventRef& ref) const {
         if (ref.output) {
@@ -1402,8 +1412,8 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         impl_->current_output_events.clear();
         impl_->current_internal_events.clear();
         // update() is not re-entrant (checked above), so these members are free to reuse.
-        input_batch.clear();
-        initial_internal_batch.clear();
+        StateMachine::Impl::clearAndTrim(input_batch);
+        StateMachine::Impl::clearAndTrim(initial_internal_batch);
         impl_->consumed_internal_sequences.clear();
         while (!impl_->pending_internal_events.empty()) {
             initial_internal_batch.push_back(std::move(impl_->pending_internal_events.front()));
@@ -1457,6 +1467,7 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
             visible_base_built = true;
         }
         const bool has_internal =
+            !impl_->current_internal_events.empty() &&
             std::any_of(impl_->current_internal_events.begin(), impl_->current_internal_events.end(),
                         [region_index](const StateMachine::Impl::InternalEventEntry& entry) {
                             return entry.first_visible_region_index <= region_index;
