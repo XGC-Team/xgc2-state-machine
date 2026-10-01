@@ -145,8 +145,25 @@ struct StateMachine::Impl {
     FaultId next_fault_id{1};
     size_t fault_depth{0};
     std::unordered_map<TaskId, TaskEntry> tasks;
-    std::vector<ProcessedEventRecord> current_events;
-    std::vector<EventTraceRecord> current_trace;
+    // The records of the running (or last) update do not hold a copy of the event they
+    // describe: they leave Event empty and refer to it, and currentEvents() / currentTrace()
+    // fill it in when called. Every referenced event lives until the next update() starts: the
+    // two batches, current_internal_events, current_output_events and pending_internal_events.
+    struct EventRef {
+        const Event* event{nullptr}; // null: the record already holds its event (or none)
+        bool output{false};          // the event is current_output_events[index]
+        size_t index{0};
+    };
+    struct ProcessedSlot {
+        ProcessedEventRecord record;
+        EventRef ref;
+    };
+    struct TraceSlot {
+        EventTraceRecord record;
+        EventRef ref;
+    };
+    std::vector<ProcessedSlot> current_events;
+    std::vector<TraceSlot> current_trace;
     std::vector<Event> current_output_events;
     // Callbacks receive pointers into this container (ctx.event(), onEvent) and may post
     // more internal events while holding them; a deque keeps existing elements in place.
@@ -545,6 +562,23 @@ struct StateMachine::Impl {
         return enterState(region_it->second.config.initial_state, event, true);
     }
 
+    const Event* resolve(const EventRef& ref) const {
+        return ref.output ? &current_output_events[ref.index] : ref.event;
+    }
+
+    ProcessedEventRecord& recordProcessed(const EventRef& ref) {
+        ProcessedSlot& slot = current_events.emplace_back();
+        slot.ref = ref;
+        return slot.record;
+    }
+
+    EventTraceRecord& recordTrace(EventTraceRecord::Kind kind, const EventRef& ref) {
+        TraceSlot& slot = current_trace.emplace_back();
+        slot.ref = ref;
+        slot.record.kind = kind;
+        return slot.record;
+    }
+
     Status enqueueEvent(Event event, bool bypass_capacity = false) {
         event.category = EventCategory::kInput;
         std::lock_guard<std::mutex> inbox_lock(inbox_mutex);
@@ -572,19 +606,19 @@ struct StateMachine::Impl {
         event.category = EventCategory::kInternal;
         event.sequence = next_event_sequence++;
         ++generated_events;
-        current_trace.emplace_back();
-        EventTraceRecord& trace = current_trace.back();
-        trace.kind = EventTraceRecord::Kind::kInternalEventGenerated;
-        trace.event = event;
-        trace.producer_region = producer.region;
-        trace.producer_state = producer.state;
+        const Event* stored = nullptr;
         if (update_in_progress && processing_region) {
             current_internal_events.push_back(InternalEventEntry{std::move(event), producer.region, producer.state,
                                                                  internal_event_first_visible_region_index,
                                                                  current_region_index});
+            stored = &current_internal_events.back().event;
         } else {
             pending_internal_events.push_back(std::move(event));
+            stored = &pending_internal_events.back();
         }
+        EventTraceRecord& trace = recordTrace(EventTraceRecord::Kind::kInternalEventGenerated, EventRef{stored});
+        trace.producer_region = producer.region;
+        trace.producer_state = producer.state;
         return Status{};
     }
 
@@ -592,10 +626,10 @@ struct StateMachine::Impl {
         event.category = EventCategory::kOutput;
         event.sequence = next_event_sequence++;
         ++generated_events;
-        current_trace.emplace_back();
-        EventTraceRecord& trace = current_trace.back();
-        trace.kind = EventTraceRecord::Kind::kOutputEventGenerated;
-        trace.event = event;
+        EventRef ref;
+        ref.output = true;
+        ref.index = current_output_events.size();
+        EventTraceRecord& trace = recordTrace(EventTraceRecord::Kind::kOutputEventGenerated, ref);
         trace.producer_region = producer.region;
         trace.producer_state = producer.state;
         current_output_events.push_back(std::move(event));
@@ -1518,11 +1552,8 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                 impl_->consumed_internal_sequences.push_back(event->sequence);
             }
         }
-        impl_->current_events.emplace_back();
-        ProcessedEventRecord& processed = impl_->current_events.back();
-        if (event) {
-            processed.event = *event;
-        } else {
+        ProcessedEventRecord& processed = impl_->recordProcessed(StateMachine::Impl::EventRef{event});
+        if (!event) {
             processed.event.category = EventCategory::kInternal;
             processed.event.source = "condition";
         }
@@ -1533,10 +1564,11 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         processed.transition = rule.id;
         processed.priority = rule.priority;
 
-        impl_->current_trace.emplace_back();
-        EventTraceRecord& trace = impl_->current_trace.back();
-        trace.kind = EventTraceRecord::Kind::kTransitionCommitted;
-        trace.event = processed.event;
+        EventTraceRecord& trace =
+            impl_->recordTrace(EventTraceRecord::Kind::kTransitionCommitted, StateMachine::Impl::EventRef{event});
+        if (!event) {
+            trace.event = processed.event;
+        }
         trace.consumer_region = region_id;
         trace.from_state = from_leaf;
         trace.to_state = processed.to_state;
@@ -1650,17 +1682,13 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                             ++result.faults_recorded;
                         }
                         ++result.events_processed;
-                        impl_->current_events.emplace_back();
-                        ProcessedEventRecord& processed = impl_->current_events.back();
-                        processed.event = *event;
+                        ProcessedEventRecord& processed = impl_->recordProcessed(StateMachine::Impl::EventRef{event});
                         processed.region = region_id;
                         processed.from_state = state;
                         processed.to_state = state;
 
-                        impl_->current_trace.emplace_back();
-                        EventTraceRecord& trace = impl_->current_trace.back();
-                        trace.kind = EventTraceRecord::Kind::kEventConsumed;
-                        trace.event = *event;
+                        EventTraceRecord& trace = impl_->recordTrace(EventTraceRecord::Kind::kEventConsumed,
+                                                                     StateMachine::Impl::EventRef{event});
                         trace.consumer_region = region_id;
                         trace.from_state = state;
                         trace.to_state = state;
@@ -1678,16 +1706,13 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                 std::find(consumed.begin(), consumed.end(), entry.event.sequence) != consumed.end();
             if (!event_consumed &&
                 (entry.first_visible_region_index >= next_tick_index || entry.producer_region_index > 0)) {
-                impl_->current_trace.emplace_back();
-                EventTraceRecord& trace = impl_->current_trace.back();
-                trace.kind = EventTraceRecord::Kind::kInternalEventDeferred;
-                trace.event = entry.event;
+                EventTraceRecord& trace = impl_->recordTrace(EventTraceRecord::Kind::kInternalEventDeferred,
+                                                             StateMachine::Impl::EventRef{&entry.event});
                 trace.producer_region = entry.producer_region;
                 trace.producer_state = entry.producer_state;
-                impl_->pending_internal_events.push_back(std::move(entry.event));
+                impl_->pending_internal_events.push_back(entry.event); // the trace still refers to entry.event
             }
         }
-        impl_->current_internal_events.clear();
     }
 
     {
@@ -1721,8 +1746,6 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         std::lock_guard<std::mutex> inbox_lock(impl_->inbox_mutex);
         result.generated_events = impl_->generated_events - generated_before;
     }
-    input_batch.clear();
-    initial_internal_batch.clear();
     impl_->visible_base.clear();
     impl_->visible_with_internal.clear();
     return finish();
@@ -1759,12 +1782,28 @@ std::vector<FaultRecord> StateMachine::faultLog() const {
 
 std::vector<ProcessedEventRecord> StateMachine::currentEvents() const {
     std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
-    return impl_->current_events;
+    std::vector<ProcessedEventRecord> records;
+    records.reserve(impl_->current_events.size());
+    for (const auto& slot : impl_->current_events) {
+        records.push_back(slot.record);
+        if (const Event* event = impl_->resolve(slot.ref)) {
+            records.back().event = *event;
+        }
+    }
+    return records;
 }
 
 std::vector<EventTraceRecord> StateMachine::currentTrace() const {
     std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
-    return impl_->current_trace;
+    std::vector<EventTraceRecord> records;
+    records.reserve(impl_->current_trace.size());
+    for (const auto& slot : impl_->current_trace) {
+        records.push_back(slot.record);
+        if (const Event* event = impl_->resolve(slot.ref)) {
+            records.back().event = *event;
+        }
+    }
+    return records;
 }
 
 std::vector<Event> StateMachine::currentOutputEvents() const {
