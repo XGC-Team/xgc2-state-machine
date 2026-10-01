@@ -129,6 +129,13 @@ if(XGC2_STATE_MACHINE_BUILD_TESTING)
     )
     add_test(NAME state_machine_concurrency_test COMMAND state_machine_concurrency_test)
     set_tests_properties(state_machine_concurrency_test PROPERTIES TIMEOUT 60)
+
+    # A steady-state tick must not allocate; counts operator new calls.
+    add_executable(state_machine_allocation_test test/state_machine_allocation_test.cpp)
+    target_include_directories(state_machine_allocation_test PRIVATE test)
+    target_link_libraries(state_machine_allocation_test PRIVATE xgc2_state_machine::state_machine)
+    add_test(NAME state_machine_allocation_test COMMAND state_machine_allocation_test)
+    set_tests_properties(state_machine_allocation_test PROPERTIES TIMEOUT 60)
   endif()
 endif()
 
