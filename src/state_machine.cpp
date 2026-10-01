@@ -1326,23 +1326,23 @@ Status StateMachine::postEvent(Event event) {
 }
 
 Status StateMachine::postTaskResult(TaskHandle handle, TaskStatus status, EventPayload payload) {
-    {
-        std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
-        const auto it = impl_->tasks.find(handle.id);
-        const bool active_path = impl_->activeInPath({handle.owner_region, handle.owner_state});
-        const bool stale = it == impl_->tasks.end() || !it->second.active ||
-                           it->second.handle.correlation_id != handle.correlation_id || !active_path;
-        if (stale) {
-            EventLogRecord record;
-            record.kind = EventLogRecord::Kind::kTaskResultReceived;
-            record.region = handle.owner_region;
-            record.from_state = handle.owner_state;
-            record.message = "stale task result ignored";
-            impl_->log(record);
-            return Status{};
-        }
-        impl_->tasks[handle.id].active = false;
+    // Task results usually arrive from worker threads: the acceptance log record must be written
+    // under the state lock like every other one, and postEvent() re-enters this recursive lock.
+    std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
+    const auto it = impl_->tasks.find(handle.id);
+    const bool active_path = impl_->activeInPath({handle.owner_region, handle.owner_state});
+    const bool stale = it == impl_->tasks.end() || !it->second.active ||
+                       it->second.handle.correlation_id != handle.correlation_id || !active_path;
+    if (stale) {
+        EventLogRecord record;
+        record.kind = EventLogRecord::Kind::kTaskResultReceived;
+        record.region = handle.owner_region;
+        record.from_state = handle.owner_state;
+        record.message = "stale task result ignored";
+        impl_->log(record);
+        return Status{};
     }
+    impl_->tasks[handle.id].active = false;
     Event event(kTaskResultEvent);
     event.correlation_id = handle.correlation_id;
     event.payload = std::move(payload);
