@@ -77,3 +77,18 @@ lcov --summary /tmp/state_machine_cov/coverage.info
 ```
 
 The coverage target covers the `state_machine` production source through the public runtime API.
+
+## Per-tick cost
+
+`update()` runs once per control tick (1 kHz per robot in the multirotor controller), so a tick that carries no event does not touch the heap, and an event costs one copy of its source string in the event log.
+
+- Everything derived from the graph (top-level regions, each state's child regions, path to the root and outgoing rules) is built while configuring. A region's active states are cached until an active leaf changes.
+- `update()` keeps its scratch buffers between ticks. Processed-event and trace records refer to the events they describe and `currentEvents()` / `currentTrace()` copy them when called; the referenced events stay valid until the next `update()` begins.
+- `update()` holds the state mutex from start to finish. Lock order is always state mutex, then inbox mutex.
+
+Checks (all registered with ctest unless noted):
+
+- `state_machine_allocation_test` counts `operator new` calls per tick on a controller-shaped machine.
+- `state_machine_equivalence_test` replays seeded scenarios and compares every observable output with golden files; `test/compare_revisions.sh <git revision>` runs the same scenarios through an older revision and compares them step by step (not registered).
+- `state_machine_concurrency_test` posts from several threads while the owner updates.
+- `bench/state_machine_tick_bench` reports ns and allocations per tick (`-DXGC2_STATE_MACHINE_BUILD_BENCHMARKS=ON`, not registered).

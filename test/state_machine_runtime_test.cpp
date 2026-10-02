@@ -827,4 +827,139 @@ TEST(StateMachineRuntime, PureLogicPerformanceSmoke) {
     EXPECT_EQ(inactive_guard_calls, 0);
 }
 
+// Runs a callable for each lifecycle callback; lets a test script what a state does.
+class ScriptedState final : public sm::State {
+  public:
+    using Hook = std::function<void(sm::StateContext&, const sm::Event*)>;
+
+    explicit ScriptedState(std::string name) : name_(std::move(name)) {}
+
+    std::string name() const override { return name_; }
+
+    sm::ActionResult onTick(sm::StateContext& ctx) override {
+        if (on_tick) {
+            on_tick(ctx, nullptr);
+        }
+        return sm::Status{};
+    }
+
+    sm::ActionResult onEvent(sm::StateContext& ctx, const sm::Event& event) override {
+        if (on_event) {
+            on_event(ctx, &event);
+        }
+        return sm::Status{};
+    }
+
+    Hook on_tick;
+    Hook on_event;
+
+  private:
+    std::string name_;
+};
+
+// Fills freshly allocated blocks of many sizes so that memory freed by a growing
+// container is overwritten instead of lingering with its old contents.
+std::vector<std::vector<char>> clobberFreedMemory() {
+    std::vector<std::vector<char>> blocks;
+    for (size_t size = 16; size <= 2048; size += 16) {
+        blocks.emplace_back(size, static_cast<char>(0xA5));
+    }
+    return blocks;
+}
+
+TEST(StateMachineRuntime, InternalEventsStayValidWhileCallbacksPostMore) {
+    // ctx.event() and the events handed to onEvent() point into the runtime's per-tick
+    // internal event storage. Callbacks that post further internal events must not move
+    // them, however many are posted.
+    constexpr sm::EventId kFirst = 301;
+    constexpr sm::EventId kSecond = 302;
+    const std::string first_source = "first-event-source-longer-than-any-small-string-buffer";
+
+    bool posted = false;
+    auto health = std::make_unique<ScriptedState>("Health");
+    health->on_tick = [&](sm::StateContext& ctx, const sm::Event*) {
+        if (posted) {
+            return;
+        }
+        posted = true;
+        sm::Event first(kFirst);
+        first.source = first_source;
+        first.payload["level"] = static_cast<int64_t>(7);
+        ctx.postInternalEvent(std::move(first));
+        ctx.postInternalEvent(sm::Event(kSecond));
+    };
+
+    std::vector<std::vector<char>> keep_alive;
+    sm::EventId action_event_id = 0;
+    std::string action_event_source;
+    int64_t action_event_level = 0;
+    std::vector<sm::EventId> seen_by_last_region;
+    auto last = std::make_unique<ScriptedState>("Last");
+    last->on_event = [&](sm::StateContext& ctx, const sm::Event* event) {
+        seen_by_last_region.push_back(event->id);
+        ctx.postInternalEvent(sm::Event(400 + event->id));
+        keep_alive = clobberFreedMemory();
+        // The event handed to this callback must still hold what it held on entry.
+        EXPECT_EQ(seen_by_last_region.back(), event->id);
+    };
+
+    auto builder = sm::StateMachine::builder("stable_internal_events");
+    builder.region(kHealthRegion)
+        .order(0)
+        .initial(kHealth)
+        .state(kHealth)
+        .impl(std::move(health))
+        .endRegion()
+        .region(kFlightRegion)
+        .order(10)
+        .initial(kReady)
+        .state(kReady)
+        .impl(state("Ready"))
+        .state(kLanding)
+        .impl(state("Landing"))
+        .endRegion()
+        .region(kExtraRegion)
+        .order(20)
+        .initial(kA)
+        .state(kA)
+        .impl(std::move(last))
+        .endRegion()
+        .transition()
+        .from(kReady)
+        .to(kLanding)
+        .on(kFirst)
+        .action([&](sm::StateContext& ctx) {
+            for (sm::EventId id = 201; id <= 204; ++id) {
+                ctx.postInternalEvent(sm::Event(id));
+            }
+            keep_alive = clobberFreedMemory();
+            action_event_id = ctx.event()->id;
+            action_event_source = ctx.event()->source;
+            action_event_level = std::get<int64_t>(ctx.event()->payload.at("level"));
+            return sm::Status{};
+        });
+    auto machine = requireMachine(builder.build());
+    ASSERT_TRUE(machine->start().ok());
+
+    const auto result = machine->update({64, 64, true});
+    ASSERT_TRUE(result.ok()) << result.status.message;
+
+    EXPECT_EQ(machine->currentState(kFlightRegion), kLanding);
+    EXPECT_EQ(action_event_id, kFirst);
+    EXPECT_EQ(action_event_source, first_source);
+    EXPECT_EQ(action_event_level, 7);
+    bool recorded_transition = false;
+    for (const auto& record : machine->currentEvents()) {
+        if (record.triggered_transition) {
+            recorded_transition = true;
+            EXPECT_EQ(record.event.id, kFirst);
+            EXPECT_EQ(record.event.source, first_source);
+            EXPECT_EQ(std::get<int64_t>(record.event.payload.at("level")), 7);
+        }
+    }
+    EXPECT_TRUE(recorded_transition);
+    // The last region sees everything posted before it ran, in posting order.
+    EXPECT_EQ(seen_by_last_region, (std::vector<sm::EventId>{kFirst, kSecond, 201, 202, 203, 204}));
+}
+
 } // namespace

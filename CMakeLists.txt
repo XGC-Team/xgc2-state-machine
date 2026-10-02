@@ -5,6 +5,7 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 option(XGC2_STATE_MACHINE_BUILD_TESTING "Build xgc2_state_machine tests" ON)
+option(XGC2_STATE_MACHINE_BUILD_BENCHMARKS "Build xgc2_state_machine tick benchmarks" OFF)
 
 add_library(xgc2_state_machine SHARED
   src/state_machine.cpp
@@ -101,5 +102,53 @@ if(XGC2_STATE_MACHINE_BUILD_TESTING)
         COMMAND async_task_executor_test ${_case})
       set_tests_properties(async_task_executor_${_case} PROPERTIES TIMEOUT 15)
     endforeach()
+
+    # Replays seeded scenarios and compares every observable output with a
+    # golden file recorded from the revision before the per-tick optimizations.
+    add_executable(state_machine_equivalence_test test/state_machine_equivalence_test.cpp)
+    target_include_directories(state_machine_equivalence_test PRIVATE test)
+    target_link_libraries(state_machine_equivalence_test
+      PRIVATE xgc2_state_machine::state_machine Threads::Threads
+    )
+    add_test(NAME state_machine_equivalence_test
+      COMMAND state_machine_equivalence_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/golden/state_machine_equivalence.golden)
+    set_tests_properties(state_machine_equivalence_test PROPERTIES TIMEOUT 120)
+    # The same scenarios with callbacks posting internal events from every
+    # callback kind; recorded after the per-tick internal event storage was made
+    # address-stable (before that it was undefined behaviour).
+    add_test(NAME state_machine_equivalence_internal_anywhere_test
+      COMMAND state_machine_equivalence_test --internal-anywhere
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/golden/state_machine_equivalence_internal_anywhere.golden)
+    set_tests_properties(state_machine_equivalence_internal_anywhere_test PROPERTIES TIMEOUT 120)
+
+    # Producer threads post while the owner updates: nothing lost, nothing reordered.
+    add_executable(state_machine_concurrency_test test/state_machine_concurrency_test.cpp)
+    target_link_libraries(state_machine_concurrency_test
+      PRIVATE xgc2_state_machine::state_machine Threads::Threads
+    )
+    add_test(NAME state_machine_concurrency_test COMMAND state_machine_concurrency_test)
+    set_tests_properties(state_machine_concurrency_test PROPERTIES TIMEOUT 60)
+    # A worker thread posts task results while the owner updates and another thread posts.
+    add_executable(state_machine_task_result_test test/state_machine_task_result_test.cpp)
+    target_link_libraries(state_machine_task_result_test
+      PRIVATE xgc2_state_machine::state_machine Threads::Threads
+    )
+    add_test(NAME state_machine_task_result_test COMMAND state_machine_task_result_test)
+    set_tests_properties(state_machine_task_result_test PROPERTIES TIMEOUT 60)
+
+    # A steady-state tick must not allocate; counts operator new calls.
+    add_executable(state_machine_allocation_test test/state_machine_allocation_test.cpp)
+    target_include_directories(state_machine_allocation_test PRIVATE test)
+    target_link_libraries(state_machine_allocation_test PRIVATE xgc2_state_machine::state_machine)
+    add_test(NAME state_machine_allocation_test COMMAND state_machine_allocation_test)
+    set_tests_properties(state_machine_allocation_test PROPERTIES TIMEOUT 60)
   endif()
+endif()
+
+if(XGC2_STATE_MACHINE_BUILD_BENCHMARKS)
+  # Not installed and not part of the test suite: run by hand, see bench/.
+  add_executable(state_machine_tick_bench bench/state_machine_tick_bench.cpp)
+  target_include_directories(state_machine_tick_bench PRIVATE test/support)
+  target_link_libraries(state_machine_tick_bench PRIVATE xgc2_state_machine::state_machine)
 endif()

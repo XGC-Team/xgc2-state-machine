@@ -15,9 +15,9 @@ namespace {
 
 constexpr RegionId kImplicitRegionBase = 0x80000000u;
 
-template <typename T> void pushBounded(std::deque<T>& buffer, const T& value, size_t capacity) {
+template <typename T> void pushBounded(std::deque<T>& buffer, T value, size_t capacity) {
     const size_t normalized = std::max<size_t>(capacity, 1);
-    buffer.push_back(value);
+    buffer.push_back(std::move(value));
     while (buffer.size() > normalized) {
         buffer.pop_front();
     }
@@ -71,17 +71,27 @@ struct StateMachine::Impl {
         return input;
     }
 
+    struct RegionEntry;
+
     struct StateEntry {
         StateConfig config;
         std::unique_ptr<State> state;
         TimePoint entered_at{};
         bool active{false};
+        // Derived from the configuration by rebuildDerived(); constant while running.
+        std::vector<StateId> path_to_root;       // outermost ancestor first, this state last
+        std::vector<RegionEntry*> child_regions; // regions owned by this state, in region_order
+        std::vector<TransitionRule*> rules;      // rules leaving this state, in evaluation order
     };
 
     struct RegionEntry {
         RegionConfig config;
         StateId active_leaf{0};
         uint64_t registration_order{0};
+        // The active states of this region: its active leaf, then the states of the child
+        // regions of that leaf, depth first. Valid while chain_epoch == Impl::active_epoch.
+        mutable std::vector<const StateEntry*> chain;
+        mutable uint64_t chain_epoch{0};
     };
 
     struct InternalEventEntry {
@@ -116,6 +126,18 @@ struct StateMachine::Impl {
     std::unordered_map<StateId, StateEntry> states;
     std::map<RegionId, RegionEntry> regions;
     std::vector<RegionId> region_order;
+    std::vector<RegionEntry*> top_level_regions; // regions without an owner state, in region_order
+    uint64_t active_epoch{1};                    // bumped whenever any region's active leaf changes
+    bool derived_valid{false};                   // see ensureDerived()
+    // Scratch buffers of update(), kept so that a steady-state tick allocates nothing.
+    std::vector<const StateEntry*> update_chain;       // active states of the region being processed
+    std::vector<Event> input_batch;                    // external events taken from the inbox
+    std::vector<Event> initial_internal_batch;         // internal events deferred by the previous update
+    std::vector<const Event*> visible_base;            // both batches, in sequence order
+    std::vector<const Event*> visible_with_internal;   // visible_base plus internal events of this update
+    std::vector<uint64_t> consumed_internal_sequences; // internal events that triggered a transition
+    std::vector<StateId> exit_roots;
+    std::vector<StateId> enter_suffix;
     std::vector<TransitionRule> transitions;
     TransitionId next_transition_id{1};
     uint64_t next_transition_registration_order{1};
@@ -124,10 +146,43 @@ struct StateMachine::Impl {
     FaultId next_fault_id{1};
     size_t fault_depth{0};
     std::unordered_map<TaskId, TaskEntry> tasks;
-    std::vector<ProcessedEventRecord> current_events;
-    std::vector<EventTraceRecord> current_trace;
+    // The records of the running (or last) update are kept in a compact form that does not hold
+    // a copy of the event they describe, only a reference to it; currentEvents() and
+    // currentTrace() build the public records, copying the event, when they are called. Every
+    // referenced event lives until the next update() starts: the two batches,
+    // current_internal_events, current_output_events and pending_internal_events.
+    struct EventRef {
+        const Event* event{nullptr}; // null, with neither flag set: no event
+        bool output{false};          // the event is current_output_events[index]
+        bool condition{false};       // a transition without an event: the synthesized "condition" event
+        size_t index{0};
+    };
+    struct ProcessedSlot {
+        EventRef ref;
+        bool triggered_transition{false};
+        RegionId region{0};
+        StateId from_state{0};
+        StateId to_state{0};
+        std::optional<TransitionId> transition;
+        int priority{0};
+    };
+    struct TraceSlot {
+        EventTraceRecord::Kind kind{EventTraceRecord::Kind::kEventConsumed};
+        EventRef ref;
+        RegionId producer_region{0};
+        StateId producer_state{0};
+        RegionId consumer_region{0};
+        StateId from_state{0};
+        StateId to_state{0};
+        std::optional<TransitionId> transition;
+        int priority{0};
+    };
+    std::vector<ProcessedSlot> current_events;
+    std::vector<TraceSlot> current_trace;
     std::vector<Event> current_output_events;
-    std::vector<InternalEventEntry> current_internal_events;
+    // Callbacks receive pointers into this container (ctx.event(), onEvent) and may post
+    // more internal events while holding them; a deque keeps existing elements in place.
+    std::deque<InternalEventEntry> current_internal_events;
     bool processing_region{false};
     size_t current_region_index{0};
     size_t internal_event_first_visible_region_index{0};
@@ -172,7 +227,7 @@ struct StateMachine::Impl {
         return Status{};
     }
 
-    void log(const EventLogRecord& record) { pushBounded(event_log, record, options.event_log_capacity); }
+    void log(EventLogRecord record) { pushBounded(event_log, std::move(record), options.event_log_capacity); }
 
     void sortRegionOrder() {
         std::stable_sort(region_order.begin(), region_order.end(), [&](RegionId lhs, RegionId rhs) {
@@ -183,28 +238,6 @@ struct StateMachine::Impl {
             }
             return lhs_region.registration_order < rhs_region.registration_order;
         });
-    }
-
-    std::vector<RegionId> topLevelRegions() const {
-        std::vector<RegionId> ids;
-        for (RegionId id : region_order) {
-            const auto it = regions.find(id);
-            if (it != regions.end() && !it->second.config.owner_state) {
-                ids.push_back(id);
-            }
-        }
-        return ids;
-    }
-
-    std::vector<RegionId> childRegions(StateId state) const {
-        std::vector<RegionId> ids;
-        for (RegionId id : region_order) {
-            const auto it = regions.find(id);
-            if (it != regions.end() && it->second.config.owner_state == state) {
-                ids.push_back(id);
-            }
-        }
-        return ids;
     }
 
     RegionId stateRegion(StateId state) const {
@@ -236,7 +269,7 @@ struct StateMachine::Impl {
 
     RegionId topLevelRegionOfState(StateId state) const { return topLevelRegionOfRegion(stateRegion(state)); }
 
-    std::vector<StateId> pathToRoot(StateId state) const {
+    std::vector<StateId> computePathToRoot(StateId state) const {
         std::vector<StateId> path;
         StateId current = state;
         std::set<StateId> seen;
@@ -252,27 +285,124 @@ struct StateMachine::Impl {
         return path;
     }
 
-    void collectActiveStatesInRegion(RegionId region, std::vector<StateId>& out) const {
-        const auto region_it = regions.find(region);
-        if (region_it == regions.end() || region_it->second.active_leaf == 0) {
+    const std::vector<StateId>& pathOf(StateId state) const {
+        static const std::vector<StateId> kNoPath;
+        const auto it = states.find(state);
+        return it == states.end() ? kNoPath : it->second.path_to_root;
+    }
+
+    // Everything derived from regions, states and transitions (top-level regions, child regions,
+    // paths to the root, rules per state) is built once, when the machine starts: the graph is
+    // only mutated while configuring, so the tables are constant once it runs. Each
+    // configuration step just marks them stale.
+    void markDerivedStale() { derived_valid = false; }
+
+    void ensureDerived() {
+        if (!derived_valid) {
+            rebuildDerived();
+        }
+    }
+
+    void rebuildDerived() {
+        derived_valid = true;
+        top_level_regions.clear();
+        for (const RegionId id : region_order) {
+            const auto it = regions.find(id);
+            if (it != regions.end() && !it->second.config.owner_state) {
+                top_level_regions.push_back(&it->second);
+            }
+        }
+        for (auto& entry : states) {
+            entry.second.child_regions.clear();
+            entry.second.rules.clear();
+            entry.second.path_to_root = computePathToRoot(entry.first);
+        }
+        for (TransitionRule& rule : transitions) {
+            const auto source = states.find(rule.from);
+            if (source != states.end()) {
+                source->second.rules.push_back(&rule);
+            }
+        }
+        for (const RegionId id : region_order) {
+            const auto it = regions.find(id);
+            if (it == regions.end() || !it->second.config.owner_state) {
+                continue;
+            }
+            const auto owner = states.find(*it->second.config.owner_state);
+            if (owner != states.end()) {
+                owner->second.child_regions.push_back(&it->second);
+            }
+        }
+        ++active_epoch;
+    }
+
+    void setActiveLeaf(RegionEntry& region, StateId leaf) {
+        region.active_leaf = leaf;
+        ++active_epoch;
+    }
+
+    void collectChain(const RegionEntry& region, std::vector<const StateEntry*>& out) const {
+        if (region.active_leaf == 0) {
             return;
         }
-        const StateId active = region_it->second.active_leaf;
-        out.push_back(active);
-        for (RegionId child_region : childRegions(active)) {
-            collectActiveStatesInRegion(child_region, out);
+        const auto state_it = states.find(region.active_leaf);
+        if (state_it == states.end()) {
+            return;
         }
+        out.push_back(&state_it->second);
+        for (const RegionEntry* child : state_it->second.child_regions) {
+            collectChain(*child, out);
+        }
+    }
+
+    // Active states of a region, cached until any active leaf changes.
+    const std::vector<const StateEntry*>& chainOf(const RegionEntry& region) const {
+        if (region.chain_epoch != active_epoch) {
+            region.chain.clear();
+            collectChain(region, region.chain);
+            region.chain_epoch = active_epoch;
+        }
+        return region.chain;
     }
 
     std::vector<StateId> activeStatesInRegion(RegionId region) const {
         std::vector<StateId> active;
-        collectActiveStatesInRegion(region, active);
+        const auto it = regions.find(region);
+        if (it == regions.end()) {
+            return active;
+        }
+        const auto& chain = chainOf(it->second);
+        active.reserve(chain.size());
+        std::transform(chain.begin(), chain.end(), std::back_inserter(active), [](const StateEntry* entry) {
+            return entry->config.id;
+        });
         return active;
     }
 
+    // Last of the active states (the leaf of the last parallel branch), or nullptr.
+    const StateEntry* activeLeafEntry(RegionId region) const {
+        const auto it = regions.find(region);
+        if (it == regions.end()) {
+            return nullptr;
+        }
+        const auto& chain = chainOf(it->second);
+        return chain.empty() ? nullptr : chain.back();
+    }
+
+    StateId activeLeafOf(RegionId region) const {
+        const StateEntry* leaf = activeLeafEntry(region);
+        return leaf == nullptr ? 0 : leaf->config.id;
+    }
+
     bool activeInPath(StateSelection selection) const {
-        const auto active = activeStatesInRegion(selection.region);
-        return std::find(active.begin(), active.end(), selection.state) != active.end();
+        const auto it = regions.find(selection.region);
+        if (it == regions.end()) {
+            return false;
+        }
+        const auto& chain = chainOf(it->second);
+        return std::any_of(chain.begin(), chain.end(), [&](const StateEntry* entry) {
+            return entry->config.id == selection.state;
+        });
     }
 
     size_t commonPrefix(const std::vector<StateId>& lhs, const std::vector<StateId>& rhs) const {
@@ -335,15 +465,15 @@ struct StateMachine::Impl {
         }
     }
 
-    Status callStateCallback(StateId state, CallbackKind kind, const Event* event,
-                             const std::function<ActionResult(State&, StateContext&)>& call) {
-        auto it = states.find(state);
-        if (it == states.end() || !it->second.state) {
+    template <typename Call>
+    Status callStateCallback(const StateEntry& entry, CallbackKind kind, const Event* event, Call&& call) {
+        if (!entry.state) {
             return Status::error(ErrorCode::kNotFound, "state callback target not found");
         }
-        StateContext ctx(*machine, StateContext::Config{{it->second.config.region, state}, event, generated_events});
+        const StateId state = entry.config.id;
+        StateContext ctx(*machine, StateContext::Config{{entry.config.region, state}, event, generated_events});
         try {
-            auto status = call(*it->second.state, ctx);
+            auto status = call(*entry.state, ctx);
             if (!status.ok()) {
                 recordFault(faultInput(event, state, std::nullopt, kind, status.message));
                 return status;
@@ -360,6 +490,15 @@ struct StateMachine::Impl {
         }
     }
 
+    template <typename Call>
+    Status callStateCallback(StateId state, CallbackKind kind, const Event* event, Call&& call) {
+        const auto it = states.find(state);
+        if (it == states.end()) {
+            return Status::error(ErrorCode::kNotFound, "state callback target not found");
+        }
+        return callStateCallback(it->second, kind, event, std::forward<Call>(call));
+    }
+
     Status enterState(StateId state, const Event* event, bool expand_defaults) {
         auto state_it = states.find(state);
         if (state_it == states.end()) {
@@ -369,23 +508,22 @@ struct StateMachine::Impl {
         if (region_it == regions.end()) {
             return Status::error(ErrorCode::kNotFound, "state region not found");
         }
-        region_it->second.active_leaf = state;
+        setActiveLeaf(region_it->second, state);
         state_it->second.active = true;
         state_it->second.entered_at = now();
-        auto status =
-            callStateCallback(state, CallbackKind::kOnEnter, event, [](State& active_state, StateContext& ctx) {
-                return active_state.onEnter(ctx);
-            });
+        auto status = callStateCallback(state_it->second, CallbackKind::kOnEnter, event,
+                                        [](State& active_state, StateContext& ctx) {
+                                            return active_state.onEnter(ctx);
+                                        });
         if (!status.ok()) {
             return status;
         }
         if (expand_defaults) {
-            for (RegionId child_region : childRegions(state)) {
-                auto child_it = regions.find(child_region);
-                if (child_it == regions.end() || child_it->second.config.initial_state == 0) {
+            for (const RegionEntry* child : state_it->second.child_regions) {
+                if (child->config.initial_state == 0) {
                     return Status::error(ErrorCode::kInvalidArgument, "child region needs an initial state");
                 }
-                status = enterState(child_it->second.config.initial_state, event, true);
+                status = enterState(child->config.initial_state, event, true);
                 if (!status.ok()) {
                     return status;
                 }
@@ -395,33 +533,32 @@ struct StateMachine::Impl {
     }
 
     Status exitState(StateId state, const Event* event) {
-        for (auto child_regions = childRegions(state); !child_regions.empty();) {
-            const RegionId child_region = child_regions.back();
-            child_regions.pop_back();
-            const auto region_it = regions.find(child_region);
-            if (region_it != regions.end() && region_it->second.active_leaf != 0) {
-                auto status = exitState(region_it->second.active_leaf, event);
-                if (!status.ok()) {
-                    return status;
-                }
-                cancelTasksForRegionExit(child_region);
-                region_it->second.active_leaf = 0;
-            }
-        }
-
         auto state_it = states.find(state);
         if (state_it == states.end()) {
             return Status::error(ErrorCode::kNotFound, "state not found");
         }
+        const auto& child_regions = state_it->second.child_regions;
+        for (auto child = child_regions.rbegin(); child != child_regions.rend(); ++child) {
+            RegionEntry& child_region = **child;
+            if (child_region.active_leaf != 0) {
+                auto status = exitState(child_region.active_leaf, event);
+                if (!status.ok()) {
+                    return status;
+                }
+                cancelTasksForRegionExit(child_region.config.id);
+                setActiveLeaf(child_region, 0);
+            }
+        }
+
         cancelTasksForStateExit(state);
-        auto status =
-            callStateCallback(state, CallbackKind::kOnExit, event, [](State& active_state, StateContext& ctx) {
-                return active_state.onExit(ctx);
-            });
+        auto status = callStateCallback(state_it->second, CallbackKind::kOnExit, event,
+                                        [](State& active_state, StateContext& ctx) {
+                                            return active_state.onExit(ctx);
+                                        });
         state_it->second.active = false;
         auto region_it = regions.find(state_it->second.config.region);
         if (region_it != regions.end() && region_it->second.active_leaf == state) {
-            region_it->second.active_leaf = 0;
+            setActiveLeaf(region_it->second, 0);
         }
         return status;
     }
@@ -436,7 +573,7 @@ struct StateMachine::Impl {
         if (!status.ok()) {
             return status;
         }
-        region_it->second.active_leaf = 0;
+        setActiveLeaf(region_it->second, 0);
         return Status{};
     }
 
@@ -451,6 +588,45 @@ struct StateMachine::Impl {
         return enterState(region_it->second.config.initial_state, event, true);
     }
 
+    // Scratch vectors keep their capacity from tick to tick, but one burst of events must not
+    // pin its memory for the life of the machine.
+    template <typename T> static void clearAndTrim(std::vector<T>& values) {
+        constexpr size_t kRetainedCapacity = 256;
+        values.clear();
+        if (values.capacity() > kRetainedCapacity) {
+            std::vector<T>().swap(values);
+        }
+    }
+
+    // A copy of the event a reference stands for.
+    Event eventOf(const EventRef& ref) const {
+        if (ref.output) {
+            return current_output_events[ref.index];
+        }
+        if (ref.event != nullptr) {
+            return *ref.event;
+        }
+        Event event;
+        if (ref.condition) {
+            event.category = EventCategory::kInternal;
+            event.source = "condition";
+        }
+        return event;
+    }
+
+    ProcessedSlot& recordProcessed(const EventRef& ref) {
+        ProcessedSlot& slot = current_events.emplace_back();
+        slot.ref = ref;
+        return slot;
+    }
+
+    TraceSlot& recordTrace(EventTraceRecord::Kind kind, const EventRef& ref) {
+        TraceSlot& slot = current_trace.emplace_back();
+        slot.kind = kind;
+        slot.ref = ref;
+        return slot;
+    }
+
     Status enqueueEvent(Event event, bool bypass_capacity = false) {
         event.category = EventCategory::kInput;
         std::lock_guard<std::mutex> inbox_lock(inbox_mutex);
@@ -463,14 +639,14 @@ struct StateMachine::Impl {
             return Status::error(ErrorCode::kLimitReached, "pending event capacity reached");
         }
         event.sequence = next_event_sequence++;
-        inbox.push_back(event);
         ++generated_events;
         EventLogRecord record;
         record.kind = EventLogRecord::Kind::kEventEnqueued;
         record.sequence = event.sequence;
         record.event_id = event.id;
         record.message = event.source;
-        log(record);
+        inbox.push_back(std::move(event));
+        log(std::move(record));
         return Status{};
     }
 
@@ -478,19 +654,19 @@ struct StateMachine::Impl {
         event.category = EventCategory::kInternal;
         event.sequence = next_event_sequence++;
         ++generated_events;
-        EventTraceRecord trace;
-        trace.kind = EventTraceRecord::Kind::kInternalEventGenerated;
-        trace.event = event;
-        trace.producer_region = producer.region;
-        trace.producer_state = producer.state;
-        current_trace.push_back(trace);
+        const Event* stored = nullptr;
         if (update_in_progress && processing_region) {
             current_internal_events.push_back(InternalEventEntry{std::move(event), producer.region, producer.state,
                                                                  internal_event_first_visible_region_index,
                                                                  current_region_index});
+            stored = &current_internal_events.back().event;
         } else {
             pending_internal_events.push_back(std::move(event));
+            stored = &pending_internal_events.back();
         }
+        TraceSlot& trace = recordTrace(EventTraceRecord::Kind::kInternalEventGenerated, EventRef{stored});
+        trace.producer_region = producer.region;
+        trace.producer_state = producer.state;
         return Status{};
     }
 
@@ -498,12 +674,12 @@ struct StateMachine::Impl {
         event.category = EventCategory::kOutput;
         event.sequence = next_event_sequence++;
         ++generated_events;
-        EventTraceRecord trace;
-        trace.kind = EventTraceRecord::Kind::kOutputEventGenerated;
-        trace.event = event;
+        EventRef ref;
+        ref.output = true;
+        ref.index = current_output_events.size();
+        TraceSlot& trace = recordTrace(EventTraceRecord::Kind::kOutputEventGenerated, ref);
         trace.producer_region = producer.region;
         trace.producer_state = producer.state;
-        current_trace.push_back(trace);
         current_output_events.push_back(std::move(event));
         return Status{};
     }
@@ -1000,9 +1176,13 @@ Status StateMachine::addRegion(RegionConfig config) {
         return Status::error(ErrorCode::kAlreadyExists, "region already exists");
     }
     const RegionId id = config.id;
-    impl_->regions[id] = StateMachine::Impl::RegionEntry{std::move(config), 0, impl_->next_region_registration_order++};
+    StateMachine::Impl::RegionEntry entry;
+    entry.config = std::move(config);
+    entry.registration_order = impl_->next_region_registration_order++;
+    impl_->regions[id] = std::move(entry);
     impl_->region_order.push_back(id);
     impl_->sortRegionOrder();
+    impl_->markDerivedStale();
     return Status{};
 }
 
@@ -1027,7 +1207,11 @@ Status StateMachine::addState(StateConfig config, std::unique_ptr<State> state) 
     if (impl_->regions.count(config.region) == 0) {
         return Status::error(ErrorCode::kNotFound, "state region is not registered");
     }
-    impl_->states[config.id] = StateMachine::Impl::StateEntry{config, std::move(state), {}, false};
+    StateMachine::Impl::StateEntry entry;
+    entry.config = config;
+    entry.state = std::move(state);
+    impl_->states[config.id] = std::move(entry);
+    impl_->markDerivedStale();
     return Status{};
 }
 
@@ -1067,6 +1251,7 @@ Status StateMachine::addTransition(TransitionRule rule) {
         }
         return lhs.registration_order < rhs.registration_order;
     });
+    impl_->markDerivedStale();
     return Status{};
 }
 
@@ -1090,9 +1275,10 @@ Status StateMachine::start() {
             return Status::error(ErrorCode::kInvalidArgument, "region initial state must be a direct child");
         }
     }
+    impl_->ensureDerived();
     impl_->lifecycle = MachineLifecycle::kRunning;
-    for (RegionId region_id : impl_->topLevelRegions()) {
-        status = impl_->enterRegionDefault(region_id, nullptr);
+    for (const StateMachine::Impl::RegionEntry* region : impl_->top_level_regions) {
+        status = impl_->enterRegionDefault(region->config.id, nullptr);
         if (!status.ok()) {
             impl_->lifecycle = MachineLifecycle::kFaulted;
             return status;
@@ -1140,23 +1326,23 @@ Status StateMachine::postEvent(Event event) {
 }
 
 Status StateMachine::postTaskResult(TaskHandle handle, TaskStatus status, EventPayload payload) {
-    {
-        std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
-        const auto it = impl_->tasks.find(handle.id);
-        const bool active_path = impl_->activeInPath({handle.owner_region, handle.owner_state});
-        const bool stale = it == impl_->tasks.end() || !it->second.active ||
-                           it->second.handle.correlation_id != handle.correlation_id || !active_path;
-        if (stale) {
-            EventLogRecord record;
-            record.kind = EventLogRecord::Kind::kTaskResultReceived;
-            record.region = handle.owner_region;
-            record.from_state = handle.owner_state;
-            record.message = "stale task result ignored";
-            impl_->log(record);
-            return Status{};
-        }
-        impl_->tasks[handle.id].active = false;
+    // Task results usually arrive from worker threads: the acceptance log record must be written
+    // under the state lock like every other one, and postEvent() re-enters this recursive lock.
+    std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
+    const auto it = impl_->tasks.find(handle.id);
+    const bool active_path = impl_->activeInPath({handle.owner_region, handle.owner_state});
+    const bool stale = it == impl_->tasks.end() || !it->second.active ||
+                       it->second.handle.correlation_id != handle.correlation_id || !active_path;
+    if (stale) {
+        EventLogRecord record;
+        record.kind = EventLogRecord::Kind::kTaskResultReceived;
+        record.region = handle.owner_region;
+        record.from_state = handle.owner_state;
+        record.message = "stale task result ignored";
+        impl_->log(record);
+        return Status{};
     }
+    impl_->tasks[handle.id].active = false;
     Event event(kTaskResultEvent);
     event.correlation_id = handle.correlation_id;
     event.payload = std::move(payload);
@@ -1190,19 +1376,17 @@ Status StateMachine::cancelTask(const TaskHandle& handle) {
 
 Result<UpdateResult> StateMachine::update(UpdateOptions options) {
     UpdateResult result;
-    size_t generated_before = 0;
-    {
-        std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
-        generated_before = impl_->generated_events;
-    }
+    // One critical section for the whole update. Taking and releasing the lock around each
+    // phase let other threads in between phases; holding it only removes interleavings.
+    std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
+    const size_t generated_before = impl_->generated_events;
     if (options.max_transitions_per_update == 0) {
         options.max_transitions_per_update = 1;
     }
 
-    std::vector<Event> input_batch;
-    std::vector<Event> initial_internal_batch;
+    std::vector<Event>& input_batch = impl_->input_batch;
+    std::vector<Event>& initial_internal_batch = impl_->initial_internal_batch;
     {
-        std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
         auto owner_status = impl_->ensureOwnerBound();
         if (!owner_status.ok()) {
             result.status = owner_status;
@@ -1240,6 +1424,10 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         impl_->current_trace.clear();
         impl_->current_output_events.clear();
         impl_->current_internal_events.clear();
+        // update() is not re-entrant (checked above), so these members are free to reuse.
+        StateMachine::Impl::clearAndTrim(input_batch);
+        StateMachine::Impl::clearAndTrim(initial_internal_batch);
+        impl_->consumed_internal_sequences.clear();
         while (!impl_->pending_internal_events.empty()) {
             initial_internal_batch.push_back(std::move(impl_->pending_internal_events.front()));
             impl_->pending_internal_events.pop_front();
@@ -1260,32 +1448,54 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
     }
 
     auto finish = [&]() {
-        std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
         impl_->update_in_progress = false;
         impl_->processing_region = false;
         result.lifecycle = impl_->lifecycle;
         return Result<UpdateResult>{result.status, result};
     };
-    std::set<uint64_t> consumed_internal_sequences;
-
-    auto visible_events_for_region = [&](size_t region_index) {
-        std::vector<const Event*> visible;
-        visible.reserve(input_batch.size() + initial_internal_batch.size() + impl_->current_internal_events.size());
-        std::transform(input_batch.begin(), input_batch.end(), std::back_inserter(visible), [](const Event& event) {
-            return &event;
-        });
-        std::transform(initial_internal_batch.begin(), initial_internal_batch.end(), std::back_inserter(visible),
-                       [](const Event& event) {
-                           return &event;
-                       });
+    // The events the states of a region can see, ordered by sequence: the batch taken from the
+    // inbox, the internal events deferred from the previous update, and the internal events
+    // generated so far in this update by earlier regions (or by the region's own tick).
+    const auto by_sequence = [](const Event* lhs, const Event* rhs) {
+        return lhs->sequence < rhs->sequence;
+    };
+    const auto sort_by_sequence = [&](std::vector<const Event*>& events) {
+        if (!std::is_sorted(events.begin(), events.end(), by_sequence)) {
+            std::stable_sort(events.begin(), events.end(), by_sequence);
+        }
+    };
+    bool visible_base_built = false;
+    auto visible_events_for_region = [&](size_t region_index) -> const std::vector<const Event*>& {
+        std::vector<const Event*>& base = impl_->visible_base;
+        if (!visible_base_built) {
+            base.clear();
+            std::transform(input_batch.begin(), input_batch.end(), std::back_inserter(base), [](const Event& event) {
+                return &event;
+            });
+            std::transform(initial_internal_batch.begin(), initial_internal_batch.end(), std::back_inserter(base),
+                           [](const Event& event) {
+                               return &event;
+                           });
+            sort_by_sequence(base);
+            visible_base_built = true;
+        }
+        const bool has_internal =
+            !impl_->current_internal_events.empty() &&
+            std::any_of(impl_->current_internal_events.begin(), impl_->current_internal_events.end(),
+                        [region_index](const StateMachine::Impl::InternalEventEntry& entry) {
+                            return entry.first_visible_region_index <= region_index;
+                        });
+        if (!has_internal) {
+            return base;
+        }
+        std::vector<const Event*>& visible = impl_->visible_with_internal;
+        visible.assign(base.begin(), base.end());
         for (const auto& entry : impl_->current_internal_events) {
             if (entry.first_visible_region_index <= region_index) {
                 visible.push_back(&entry.event);
             }
         }
-        std::stable_sort(visible.begin(), visible.end(), [](const Event* lhs, const Event* rhs) {
-            return lhs->sequence < rhs->sequence;
-        });
+        sort_by_sequence(visible);
         return visible;
     };
 
@@ -1310,16 +1520,17 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
     };
 
     auto commit_transition = [&](TransitionRule& rule, RegionId region_id, const Event* event) {
-        const auto current_active = impl_->activeStatesInRegion(region_id);
-        const StateId from_leaf = current_active.empty() ? 0 : current_active.back();
+        const StateId from_leaf = impl_->activeLeafOf(region_id);
         const bool no_exit_enter = rule.type == TransitionType::kInternal || rule.type == TransitionType::kTargetless;
         StateId to_state = rule.target.value_or(rule.from);
-        std::vector<StateId> exit_roots;
-        std::vector<StateId> enter_suffix;
+        std::vector<StateId>& exit_roots = impl_->exit_roots;
+        std::vector<StateId>& enter_suffix = impl_->enter_suffix;
+        exit_roots.clear();
+        enter_suffix.clear();
 
         if (!no_exit_enter) {
-            const auto from_path = impl_->pathToRoot(rule.from);
-            const auto to_path = impl_->pathToRoot(to_state);
+            const auto& from_path = impl_->pathOf(rule.from);
+            const auto& to_path = impl_->pathOf(to_state);
             size_t prefix = rule.type == TransitionType::kExternalSelf && rule.from == to_state && !from_path.empty()
                                 ? from_path.size() - 1
                                 : impl_->commonPrefix(from_path, to_path);
@@ -1362,7 +1573,8 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
 
         if (!no_exit_enter) {
             if (rule.global) {
-                for (RegionId id : impl_->topLevelRegions()) {
+                for (const StateMachine::Impl::RegionEntry* top : impl_->top_level_regions) {
+                    const RegionId id = top->config.id;
                     if (id != region_id) {
                         auto status = impl_->exitRegion(id, event);
                         if (!status.ok()) {
@@ -1384,33 +1596,26 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         if (event) {
             ++result.events_processed;
             if (event->category == EventCategory::kInternal) {
-                consumed_internal_sequences.insert(event->sequence);
+                impl_->consumed_internal_sequences.push_back(event->sequence);
             }
         }
-        ProcessedEventRecord processed;
-        if (event) {
-            processed.event = *event;
-        } else {
-            processed.event.category = EventCategory::kInternal;
-            processed.event.source = "condition";
-        }
+        StateMachine::Impl::EventRef ref;
+        ref.event = event;
+        ref.condition = event == nullptr;
+        StateMachine::Impl::ProcessedSlot& processed = impl_->recordProcessed(ref);
         processed.triggered_transition = true;
         processed.region = region_id;
         processed.from_state = from_leaf;
         processed.to_state = no_exit_enter ? from_leaf : to_state;
         processed.transition = rule.id;
         processed.priority = rule.priority;
-        impl_->current_events.push_back(processed);
 
-        EventTraceRecord trace;
-        trace.kind = EventTraceRecord::Kind::kTransitionCommitted;
-        trace.event = processed.event;
+        StateMachine::Impl::TraceSlot& trace = impl_->recordTrace(EventTraceRecord::Kind::kTransitionCommitted, ref);
         trace.consumer_region = region_id;
         trace.from_state = from_leaf;
         trace.to_state = processed.to_state;
         trace.transition = rule.id;
         trace.priority = rule.priority;
-        impl_->current_trace.push_back(trace);
 
         EventLogRecord record;
         record.kind = EventLogRecord::Kind::kTransitionCommitted;
@@ -1422,12 +1627,11 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         record.from_state = from_leaf;
         record.to_state = processed.to_state;
         record.transition = rule.id;
-        impl_->log(record);
+        impl_->log(std::move(record));
     };
 
     {
-        std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
-        const auto top_regions = impl_->topLevelRegions();
+        const auto& top_regions = impl_->top_level_regions;
         for (size_t region_index = 0; region_index < top_regions.size(); ++region_index) {
             if (result.transitions_committed >= options.max_transitions_per_update) {
                 result.hit_transition_limit = true;
@@ -1438,9 +1642,9 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                 break;
             }
 
-            const RegionId region_id = top_regions[region_index];
-            auto region_it = impl_->regions.find(region_id);
-            if (region_it == impl_->regions.end() || region_it->second.active_leaf == 0) {
+            const StateMachine::Impl::RegionEntry& region = *top_regions[region_index];
+            const RegionId region_id = region.config.id;
+            if (region.active_leaf == 0) {
                 continue;
             }
 
@@ -1448,11 +1652,17 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
             impl_->current_region_index = region_index;
             impl_->internal_event_first_visible_region_index = region_index + 1;
 
+            // Callbacks cannot change which states are active (only transitions, start() and
+            // stop() do), so one snapshot of them serves the tick, the rule scan and the event
+            // dispatch of this region.
+            const auto& cached_chain = impl_->chainOf(region);
+            impl_->update_chain.assign(cached_chain.begin(), cached_chain.end());
+            const auto& active = impl_->update_chain;
+
             if (options.run_tick) {
-                const auto active_for_tick = impl_->activeStatesInRegion(region_id);
                 impl_->internal_event_first_visible_region_index = region_index;
-                for (StateId state : active_for_tick) {
-                    const auto status = impl_->callStateCallback(state, CallbackKind::kOnTick, nullptr,
+                for (const StateMachine::Impl::StateEntry* entry : active) {
+                    const auto status = impl_->callStateCallback(*entry, CallbackKind::kOnTick, nullptr,
                                                                  [](State& active_state, StateContext& ctx) {
                                                                      return active_state.onTick(ctx);
                                                                  });
@@ -1463,13 +1673,13 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                 impl_->internal_event_first_visible_region_index = region_index + 1;
             }
 
-            const auto visible = visible_events_for_region(region_index);
-            const auto active_for_transition = impl_->activeStatesInRegion(region_id);
+            const std::vector<const Event*>& visible = visible_events_for_region(region_index);
             TransitionRule* selected_rule = nullptr;
             const Event* selected_event = nullptr;
-            for (StateId state : active_for_transition) {
-                for (auto& rule : impl_->transitions) {
-                    if (rule.from != state || rule.region != region_id) {
+            for (const StateMachine::Impl::StateEntry* entry : active) {
+                for (TransitionRule* candidate : entry->rules) {
+                    TransitionRule& rule = *candidate;
+                    if (rule.region != region_id) {
                         continue;
                     }
                     if (rule.event) {
@@ -1499,13 +1709,13 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
             if (selected_rule != nullptr) {
                 commit_transition(*selected_rule, region_id, selected_event);
             } else {
-                const auto active_for_events = impl_->activeStatesInRegion(region_id);
                 for (const Event* event : visible) {
                     if (!event || event->category == EventCategory::kOutput) {
                         continue;
                     }
-                    for (StateId state : active_for_events) {
-                        auto status = impl_->callStateCallback(state, CallbackKind::kOnEvent, event,
+                    for (const StateMachine::Impl::StateEntry* entry : active) {
+                        const StateId state = entry->config.id;
+                        auto status = impl_->callStateCallback(*entry, CallbackKind::kOnEvent, event,
                                                                [&](State& active_state, StateContext& ctx) {
                                                                    return active_state.onEvent(ctx, *event);
                                                                });
@@ -1513,20 +1723,17 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
                             ++result.faults_recorded;
                         }
                         ++result.events_processed;
-                        ProcessedEventRecord processed;
-                        processed.event = *event;
+                        StateMachine::Impl::ProcessedSlot& processed =
+                            impl_->recordProcessed(StateMachine::Impl::EventRef{event});
                         processed.region = region_id;
                         processed.from_state = state;
                         processed.to_state = state;
-                        impl_->current_events.push_back(processed);
 
-                        EventTraceRecord trace;
-                        trace.kind = EventTraceRecord::Kind::kEventConsumed;
-                        trace.event = *event;
+                        StateMachine::Impl::TraceSlot& trace = impl_->recordTrace(
+                            EventTraceRecord::Kind::kEventConsumed, StateMachine::Impl::EventRef{event});
                         trace.consumer_region = region_id;
                         trace.from_state = state;
                         trace.to_state = state;
-                        impl_->current_trace.push_back(trace);
                     }
                 }
             }
@@ -1536,26 +1743,24 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
 
         const size_t next_tick_index = top_regions.size();
         for (auto& entry : impl_->current_internal_events) {
-            const bool event_consumed = consumed_internal_sequences.count(entry.event.sequence) != 0;
+            const auto& consumed = impl_->consumed_internal_sequences;
+            const bool event_consumed =
+                std::find(consumed.begin(), consumed.end(), entry.event.sequence) != consumed.end();
             if (!event_consumed &&
                 (entry.first_visible_region_index >= next_tick_index || entry.producer_region_index > 0)) {
-                EventTraceRecord trace;
-                trace.kind = EventTraceRecord::Kind::kInternalEventDeferred;
-                trace.event = entry.event;
+                StateMachine::Impl::TraceSlot& trace = impl_->recordTrace(
+                    EventTraceRecord::Kind::kInternalEventDeferred, StateMachine::Impl::EventRef{&entry.event});
                 trace.producer_region = entry.producer_region;
                 trace.producer_state = entry.producer_state;
-                impl_->current_trace.push_back(trace);
-                impl_->pending_internal_events.push_back(std::move(entry.event));
+                impl_->pending_internal_events.push_back(entry.event); // the trace still refers to entry.event
             }
         }
-        impl_->current_internal_events.clear();
     }
 
     {
-        std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
         if (impl_->stop_requested) {
-            for (RegionId region_id : impl_->topLevelRegions()) {
-                auto status = impl_->exitRegion(region_id, nullptr);
+            for (const StateMachine::Impl::RegionEntry* top : impl_->top_level_regions) {
+                auto status = impl_->exitRegion(top->config.id, nullptr);
                 if (!status.ok()) {
                     ++result.faults_recorded;
                 }
@@ -1578,10 +1783,9 @@ Result<UpdateResult> StateMachine::update(UpdateOptions options) {
         }
     }
 
-    {
-        std::lock_guard<std::mutex> inbox_lock(impl_->inbox_mutex);
-        result.generated_events = impl_->generated_events - generated_before;
-    }
+    result.generated_events = impl_->generated_events - generated_before;
+    impl_->visible_base.clear();
+    impl_->visible_with_internal.clear();
     return finish();
 }
 
@@ -1596,9 +1800,9 @@ MachineSnapshot StateMachine::snapshot() const {
     }
     snapshot.inbox_size += impl_->pending_internal_events.size();
     for (const auto& region_pair : impl_->regions) {
-        const auto active = impl_->activeStatesInRegion(region_pair.first);
+        auto active = impl_->activeStatesInRegion(region_pair.first);
         snapshot.active_leaf_states[region_pair.first] = active.empty() ? 0 : active.back();
-        snapshot.active_state_paths[region_pair.first] = active;
+        snapshot.active_state_paths[region_pair.first] = std::move(active);
     }
     snapshot.recent_faults.assign(impl_->fault_log.begin(), impl_->fault_log.end());
     return snapshot;
@@ -1616,12 +1820,32 @@ std::vector<FaultRecord> StateMachine::faultLog() const {
 
 std::vector<ProcessedEventRecord> StateMachine::currentEvents() const {
     std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
-    return impl_->current_events;
+    std::vector<ProcessedEventRecord> records;
+    records.reserve(impl_->current_events.size());
+    std::transform(impl_->current_events.begin(), impl_->current_events.end(), std::back_inserter(records),
+                   [this](const Impl::ProcessedSlot& slot) {
+                       return ProcessedEventRecord{impl_->eventOf(slot.ref),
+                                                   slot.triggered_transition,
+                                                   slot.region,
+                                                   slot.from_state,
+                                                   slot.to_state,
+                                                   slot.transition,
+                                                   slot.priority};
+                   });
+    return records;
 }
 
 std::vector<EventTraceRecord> StateMachine::currentTrace() const {
     std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
-    return impl_->current_trace;
+    std::vector<EventTraceRecord> records;
+    records.reserve(impl_->current_trace.size());
+    std::transform(impl_->current_trace.begin(), impl_->current_trace.end(), std::back_inserter(records),
+                   [this](const Impl::TraceSlot& slot) {
+                       return EventTraceRecord{slot.kind,           impl_->eventOf(slot.ref), slot.producer_region,
+                                               slot.producer_state, slot.consumer_region,     slot.from_state,
+                                               slot.to_state,       slot.transition,          slot.priority};
+                   });
+    return records;
 }
 
 std::vector<Event> StateMachine::currentOutputEvents() const {
@@ -1636,8 +1860,7 @@ MachineLifecycle StateMachine::lifecycle() const {
 
 StateId StateMachine::currentState(RegionId region) const {
     std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
-    const auto active = impl_->activeStatesInRegion(region);
-    return active.empty() ? 0 : active.back();
+    return impl_->activeLeafOf(region);
 }
 
 std::vector<StateId> StateMachine::currentStatePath(RegionId region) const {
@@ -1647,15 +1870,8 @@ std::vector<StateId> StateMachine::currentStatePath(RegionId region) const {
 
 std::string StateMachine::currentStateName(RegionId region) const {
     std::lock_guard<std::recursive_mutex> lock(impl_->state_mutex);
-    const auto active = impl_->activeStatesInRegion(region);
-    if (active.empty()) {
-        return {};
-    }
-    const auto state_it = impl_->states.find(active.back());
-    if (state_it == impl_->states.end()) {
-        return {};
-    }
-    return state_it->second.config.name;
+    const StateMachine::Impl::StateEntry* leaf = impl_->activeLeafEntry(region);
+    return leaf == nullptr ? std::string{} : leaf->config.name;
 }
 
 Duration StateMachine::elapsed(StateId state) const {
