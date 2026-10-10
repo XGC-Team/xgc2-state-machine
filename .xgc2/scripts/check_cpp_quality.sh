@@ -48,6 +48,7 @@ cppcheck \
   --inline-suppr \
   --suppress=assertWithSideEffect:test/state_machine_runtime_test.cpp \
   -I include \
+  -i test/benchmark \
   src test
 
 echo "C++ quality checks passed."
