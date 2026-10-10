@@ -43,7 +43,14 @@ target_link_libraries(your_target
 
 ```text
 include/state_machine/state_machine.hpp   Public API
-src/state_machine.cpp                     Runtime implementation
+src/builder.cpp                           Graph construction
+src/graph.cpp                             Graph validation and derived tables
+src/state_machine.cpp                     Lifecycle, observations and contexts
+src/update.cpp                            Ordered tick execution
+src/transitions.cpp                       State entry/exit and transition execution
+src/events.cpp                            Event admission, traces and fault logs
+src/tasks.cpp                             Task registration, results and cancellation
+src/state_machine_impl.hpp                Private shared implementation
 test/state_machine_runtime_test.cpp       Unit, stress, and sanitizer-oriented tests
 docs/runtime_design.md                    Design and reliability notes
 .xgc2/scripts/build_deb.sh                Debian package builder

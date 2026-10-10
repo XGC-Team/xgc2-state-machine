@@ -6,9 +6,11 @@
 // currentTrace(), currentOutputEvents(), the state queries, the clock reads the
 // runtime makes, and the order and arguments of every callback, guard and action
 // the runtime invokes. The text of all of that is folded into 64-bit FNV-1a
-// hashes that are compared with a golden file recorded from the revision before
-// the per-tick optimizations (6f31e52). A refactor that changes anything a
-// caller can see therefore fails here, at a step number.
+// hashes compared with a golden file initially recorded before the per-tick
+// optimizations (6f31e52). Task-result checkpoints now include retryable inbox
+// backpressure and retirement of results from inactive owners. Pure source
+// splitting was checked against both original goldens before these fixes.
+// A refactor that changes any observable therefore fails at a step number.
 //
 // Two kinds of scenario:
 //   controller_flight  a scripted flight through the controller-shaped machine

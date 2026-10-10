@@ -42,9 +42,10 @@ git -C "${repo_root}" archive "${revision}" | tar -x -C "${work}/old"
 
 build() {
     local tree=$1 out=$2
+    local sources=("${tree}"/src/*.cpp)
     # shellcheck disable=SC2086 # CXXFLAGS is a list of words
     "${cxx}" -std=c++17 -O1 -pthread ${CXXFLAGS:-} -I"${tree}/include" -I"${repo_root}/test" \
-        "${repo_root}/test/state_machine_equivalence_test.cpp" "${tree}/src/state_machine.cpp" -o "${out}"
+        "${repo_root}/test/state_machine_equivalence_test.cpp" "${sources[@]}" -o "${out}"
 }
 build "${work}/old" "${work}/old_test"
 build "${repo_root}" "${work}/new_test"

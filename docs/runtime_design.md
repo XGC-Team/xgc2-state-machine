@@ -27,6 +27,8 @@
 - Condition-only transitions are expressed as builder `.when(guard)` rules and are evaluated once per tick while their source state is active.
 - Global transitions close other regions when committed. They are still evaluated from their source region according to the same ordered-region pass.
 - Task results are accepted only if the task is active, correlation matches, and the owner state remains active in the region path. `KeepRunning` means the runtime does not request cancellation on state exit; it does not bypass stale-result filtering. Long-lived tasks should be owned by a parent state that remains active for the intended lifetime.
+- A full inbox leaves the task pending: retry its result after backpressure clears. A result is marked accepted only after it is queued successfully.
+- The task table holds unfinished tasks. Completion, cancellation and matching results from inactive owners release their records. Issued task IDs are never reused, so late/duplicate results remain ignored and cancellation remains idempotent without an unbounded history table.
 - Faults are logged and converted into fault events. Repeated fault handling is fused by `RuntimeOptions::max_fault_depth`.
 - `stop()` is a thread-safe request. State exits happen deterministically in the owner update.
 

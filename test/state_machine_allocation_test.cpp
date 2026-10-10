@@ -23,6 +23,7 @@
 namespace {
 
 std::uint64_t g_alloc_calls = 0;
+std::int64_t g_live_allocations = 0;
 bool g_counting = false;
 
 // Counting is only on while the library runs, not while the test builds events.
@@ -51,14 +52,21 @@ void* operator new(std::size_t size) {
     if (ptr == nullptr) {
         throw std::bad_alloc();
     }
+    ++g_live_allocations;
     return ptr;
 }
 
 void operator delete(void* ptr) noexcept {
+    if (ptr != nullptr) {
+        --g_live_allocations;
+    }
     std::free(ptr);
 }
 
 void operator delete(void* ptr, std::size_t) noexcept {
+    if (ptr != nullptr) {
+        --g_live_allocations;
+    }
     std::free(ptr);
 }
 
@@ -108,6 +116,77 @@ bool check(const char* what, double measured, double bound) {
     const bool ok = measured <= bound;
     std::printf("%-44s %8.3f (bound %.3f) %s\n", what, measured, bound, ok ? "ok" : "FAILED");
     return ok;
+}
+
+class TaskCycle final : public sm::State {
+  public:
+    std::string name() const override { return "TaskCycle"; }
+    sm::Status onTick(sm::StateContext& ctx) override {
+        auto started = ctx.startTask();
+        handle = started.value;
+        return started.status;
+    }
+    sm::TaskHandle handle;
+};
+
+enum class TaskEnd { kComplete, kCancel, kStateExit };
+
+bool taskStorageIsBounded(TaskEnd ending) {
+    auto state = std::make_unique<TaskCycle>();
+    auto* observed = state.get();
+    sm::RuntimeOptions options;
+    options.event_log_capacity = 32;
+    auto builder = sm::StateMachine::builder("task-storage", options);
+    builder.region(1)
+        .initial(1)
+        .state(1)
+        .impl(std::move(state))
+        .endRegion()
+        .transition()
+        .from(1)
+        .to(1)
+        .on(77)
+        .type(sm::TransitionType::kExternalSelf);
+    auto built = builder.build();
+    if (!built.ok()) {
+        return false;
+    }
+    auto machine = std::move(built.value);
+    if (!machine->start().ok()) {
+        return false;
+    }
+    const auto cycle = [&]() {
+        if (!machine->update().ok()) {
+            return false;
+        }
+        sm::Status ended;
+        if (ending == TaskEnd::kComplete) {
+            ended = machine->postTaskResult(observed->handle, sm::TaskStatus::kCompleted);
+        } else if (ending == TaskEnd::kCancel) {
+            ended = machine->cancelTask(observed->handle);
+        } else {
+            ended = machine->postEvent(sm::Event(77));
+        }
+        return ended.ok() && machine->update({64, 64, false}).ok();
+    };
+    for (int i = 0; i < 4000; ++i) {
+        if (!cycle()) {
+            return false;
+        }
+    }
+    const auto before = g_live_allocations;
+    for (int i = 0; i < 4000; ++i) {
+        if (!cycle()) {
+            return false;
+        }
+    }
+    // Bounded logs/deque storage can differ by a few blocks between snapshots.
+    // Retaining 4,000 ended task nodes would exceed this bound by orders of magnitude.
+    const auto growth = g_live_allocations - before;
+    const char* label = ending == TaskEnd::kComplete ? "completed task storage growth"
+                                                     : ending == TaskEnd::kCancel ? "cancelled task storage growth"
+                                                                                  : "state-exit task storage growth";
+    return check(label, static_cast<double>(growth), 8.0);
 }
 
 } // namespace
@@ -181,5 +260,8 @@ int main() {
              ok;
     }
 
+    ok = taskStorageIsBounded(TaskEnd::kComplete) && ok;
+    ok = taskStorageIsBounded(TaskEnd::kCancel) && ok;
+    ok = taskStorageIsBounded(TaskEnd::kStateExit) && ok;
     return ok ? 0 : 1;
 }

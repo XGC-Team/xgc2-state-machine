@@ -37,6 +37,13 @@ required_files=(
   include/state_machine/runtime/event_post.hpp
   include/state_machine/runtime/event_time.hpp
   src/state_machine.cpp
+  src/state_machine_impl.hpp
+  src/builder.cpp
+  src/events.cpp
+  src/graph.cpp
+  src/tasks.cpp
+  src/transitions.cpp
+  src/update.cpp
   test/state_machine_runtime_test.cpp
   .github/workflows/ci.yml
   .xgc2/product.yml

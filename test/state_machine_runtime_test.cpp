@@ -962,4 +962,109 @@ TEST(StateMachineRuntime, InternalEventsStayValidWhileCallbacksPostMore) {
     EXPECT_EQ(seen_by_last_region, (std::vector<sm::EventId>{kFirst, kSecond, 201, 202, 203, 204}));
 }
 
+class TaskOwner final : public sm::State {
+  public:
+    explicit TaskOwner(sm::TaskCancelPolicy cancel_policy = sm::TaskCancelPolicy::kCancelOnStateExit)
+        : policy(cancel_policy) {}
+    std::string name() const override { return "TaskOwner"; }
+    sm::Status onEnter(sm::StateContext& ctx) override {
+        auto started = ctx.startTask(policy, 456);
+        handle = started.value;
+        return started.status;
+    }
+    sm::Status onEvent(sm::StateContext&, const sm::Event& event) override {
+        if (event.id == sm::kTaskResultEvent) {
+            ++received;
+        }
+        return {};
+    }
+    sm::TaskCancelPolicy policy;
+    sm::TaskHandle handle;
+    int received{0};
+};
+
+TEST(StateMachineTasks, FullInboxKeepsResultRetryableAndDeliversExactlyOnce) {
+    sm::RuntimeOptions options;
+    options.max_pending_events = 1;
+    auto owner = std::make_unique<TaskOwner>();
+    auto* observed = owner.get();
+    auto builder = sm::StateMachine::builder("backpressure", options);
+    builder.region(1).initial(1).state(1).impl(std::move(owner)).endRegion();
+    auto machine = requireMachine(builder.build());
+    ASSERT_TRUE(machine->start().ok());
+    ASSERT_TRUE(machine->postEvent(sm::Event(77)).ok());
+    const auto rejected = machine->postTaskResult(observed->handle, sm::TaskStatus::kCompleted);
+    EXPECT_EQ(rejected.code, sm::ErrorCode::kLimitReached);
+    for (const auto& record : machine->eventLog()) {
+        EXPECT_NE(record.message, "task result accepted");
+    }
+    ASSERT_TRUE(machine->update({64, 64, false}).ok());
+    ASSERT_TRUE(machine->postTaskResult(observed->handle, sm::TaskStatus::kCompleted).ok());
+    ASSERT_TRUE(machine->update({64, 64, false}).ok());
+    EXPECT_EQ(observed->received, 1);
+    ASSERT_TRUE(machine->postTaskResult(observed->handle, sm::TaskStatus::kCompleted).ok());
+    ASSERT_TRUE(machine->update({64, 64, false}).ok());
+    EXPECT_EQ(observed->received, 1);
+    EXPECT_TRUE(machine->cancelTask(observed->handle).ok());
+}
+
+TEST(StateMachineTasks, CancellationIsIdempotentAndWrongCorrelationDoesNotEndLiveTask) {
+    auto owner = std::make_unique<TaskOwner>();
+    auto* observed = owner.get();
+    auto builder = sm::StateMachine::builder("task-identity");
+    builder.region(1).initial(1).state(1).impl(std::move(owner)).endRegion();
+    auto machine = requireMachine(builder.build());
+    ASSERT_TRUE(machine->start().ok());
+    auto wrong = observed->handle;
+    ++wrong.correlation_id;
+    ASSERT_TRUE(machine->postTaskResult(wrong, sm::TaskStatus::kCompleted).ok());
+    ASSERT_TRUE(machine->postTaskResult(observed->handle, sm::TaskStatus::kCompleted).ok());
+    ASSERT_TRUE(machine->update({64, 64, false}).ok());
+    EXPECT_EQ(observed->received, 1);
+    EXPECT_TRUE(machine->cancelTask(observed->handle).ok());
+    EXPECT_TRUE(machine->cancelTask(observed->handle).ok());
+    auto unknown = observed->handle;
+    unknown.id += 1000;
+    EXPECT_EQ(machine->cancelTask(unknown).code, sm::ErrorCode::kNotFound);
+}
+
+TEST(StateMachineTasks, EndedTaskDoesNotReviveAfterOwnerReenters) {
+    auto owner = std::make_unique<TaskOwner>(sm::TaskCancelPolicy::kKeepRunning);
+    auto* observed = owner.get();
+    auto builder = sm::StateMachine::builder("late-result");
+    builder.region(1)
+        .initial(1)
+        .state(1)
+        .impl(std::move(owner))
+        .state(2)
+        .endRegion()
+        .transition()
+        .from(1)
+        .to(2)
+        .on(77)
+        .transition()
+        .from(2)
+        .to(1)
+        .on(78);
+    auto machine = requireMachine(builder.build());
+    ASSERT_TRUE(machine->start().ok());
+    const auto old = observed->handle;
+    ASSERT_TRUE(machine->postEvent(sm::Event(77)).ok());
+    ASSERT_TRUE(machine->update({64, 64, false}).ok());
+    ASSERT_EQ(machine->currentState(), 2u);
+    ASSERT_TRUE(machine->postTaskResult(old, sm::TaskStatus::kCompleted).ok());
+    ASSERT_TRUE(machine->postEvent(sm::Event(78)).ok());
+    ASSERT_TRUE(machine->update({64, 64, false}).ok());
+    ASSERT_EQ(machine->currentState(), 1u);
+    EXPECT_NE(observed->handle.id, old.id);
+    ASSERT_TRUE(machine->postTaskResult(old, sm::TaskStatus::kCompleted).ok());
+    ASSERT_TRUE(machine->update({64, 64, false}).ok());
+    EXPECT_EQ(observed->received, 0);
+    ASSERT_TRUE(machine->cancelTask(observed->handle).ok());
+    ASSERT_TRUE(machine->cancelTask(observed->handle).ok());
+    ASSERT_TRUE(machine->postTaskResult(observed->handle, sm::TaskStatus::kCompleted).ok());
+    ASSERT_TRUE(machine->update({64, 64, false}).ok());
+    EXPECT_EQ(observed->received, 0);
+}
+
 } // namespace

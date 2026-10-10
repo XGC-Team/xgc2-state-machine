@@ -10,7 +10,15 @@ cd "${repo_root}"
 sources=(
   include/state_machine/state_machine.hpp
   include/state_machine/runtime/event_dispatcher.hpp
+  src/state_machine_impl.hpp
+  src/builder.cpp
+  src/events.cpp
+  src/graph.cpp
   src/state_machine.cpp
+  src/tasks.cpp
+  src/transitions.cpp
+  src/update.cpp
+  test/state_machine_allocation_test.cpp
   test/state_machine_runtime_test.cpp
 )
 

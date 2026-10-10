@@ -8,7 +8,13 @@ option(XGC2_STATE_MACHINE_BUILD_TESTING "Build xgc2_state_machine tests" ON)
 option(XGC2_STATE_MACHINE_BUILD_BENCHMARKS "Build xgc2_state_machine tick benchmarks" OFF)
 
 add_library(xgc2_state_machine SHARED
+  src/builder.cpp
+  src/events.cpp
+  src/graph.cpp
   src/state_machine.cpp
+  src/tasks.cpp
+  src/transitions.cpp
+  src/update.cpp
 )
 add_library(xgc2_state_machine::state_machine ALIAS xgc2_state_machine)
 
