@@ -228,14 +228,14 @@ jobs:
               git config --global --add safe.directory /work
               ./.xgc2/scripts/check_package_compliance.sh
               ./.xgc2/scripts/build_deb.sh
-              dpkg -i ./debs/libxgc2-state-machine-dev_*.deb
+              dpkg -i ./.ci/debs/libxgc2-state-machine-dev_*.deb
               ./.xgc2/scripts/smoke_test_installed.sh
             '
 
       - name: Create release-train build manifest
         run: |
           python3 .xgc2/scripts/xgc2_artifact_manifest.py build \
-            --deb-dir debs \
+            --deb-dir .ci/debs \
             --output-dir .ci/build-manifests \
             --product libxgc2-state-machine-dev \
             --product-version "${{ inputs.expected_version }}" \
@@ -252,7 +252,7 @@ jobs:
         with:
           name: libxgc2-state-machine-dev-${{ matrix.distribution }}-${{ matrix.arch }}
           path: |
-            debs/*.deb
+            .ci/debs/*.deb
             .ci/build-manifests/*.json
           retention-days: 14
           include-hidden-files: true

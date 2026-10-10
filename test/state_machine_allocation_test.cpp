@@ -6,7 +6,7 @@
 // all, or if posting and dispatching events allocates more than the one copy of
 // the event's source string the event log keeps (plus amortized container
 // nodes). Timing is not asserted: it is too noisy for a test; see
-// bench/state_machine_tick_bench.cpp for the numbers.
+// test/benchmark/state_machine_tick_bench.cpp for the numbers.
 
 #include "support/controller_like_machine.hpp"
 
