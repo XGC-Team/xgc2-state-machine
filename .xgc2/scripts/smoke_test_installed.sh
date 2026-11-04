@@ -6,6 +6,7 @@ dpkg -s libxgc2-state-machine-dev >/dev/null
 
 multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
 test -f /usr/include/state_machine/state_machine.hpp
+test -f /usr/include/state_machine/adt_machine.hpp
 test -f /usr/include/state_machine/runtime/event_dispatcher.hpp
 test -f /usr/include/state_machine/runtime/event_post.hpp
 test -f /usr/include/state_machine/runtime/event_time.hpp
@@ -34,6 +35,7 @@ CMAKE
 
 cat > "${probe_dir}/link_probe.cpp" <<'CPP'
 #include <state_machine/state_machine.hpp>
+#include <state_machine/adt_machine.hpp>
 #include <state_machine/runtime/event_dispatcher.hpp>
 #include <state_machine/runtime/event_post.hpp>
 #include <state_machine/runtime/event_time.hpp>
@@ -53,8 +55,27 @@ public:
   bool entered{false};
 };
 
+struct Cold {};
+struct Hot { int value; };
+struct Heat {};
+struct ValueSpec {
+  using State = std::variant<Cold, Hot>;
+  using Time = int;
+  static state_machine::adt::Transition<Cold, Hot> handle(Cold&, const Heat&) {
+    return state_machine::adt::Enter{Hot{42}};
+  }
+  static state_machine::adt::Transition<Cold, Hot> handle(Hot&, const Heat&) {
+    return state_machine::adt::Stay{};
+  }
+};
+
 int main()
 {
+  state_machine::adt::AdtMachine<ValueSpec> value_machine(Cold{}, 0);
+  value_machine.apply(value_machine.dispatch(Heat{}), 1);
+  if (std::get<Hot>(value_machine.state()).value != 42 || value_machine.entered_at() != 1) {
+    return 1;
+  }
   auto ready = std::make_unique<ReadyState>();
   auto* ready_ptr = ready.get();
 

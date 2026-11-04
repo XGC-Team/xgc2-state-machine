@@ -9,6 +9,7 @@ cd "${repo_root}"
 
 sources=(
   include/state_machine/state_machine.hpp
+  include/state_machine/adt_machine.hpp
   include/state_machine/runtime/event_dispatcher.hpp
   src/state_machine_impl.hpp
   src/builder.cpp
@@ -20,6 +21,7 @@ sources=(
   src/update.cpp
   test/state_machine_allocation_test.cpp
   test/state_machine_runtime_test.cpp
+  test/adt_machine_test.cpp
 )
 
 for tool in cmake ctest clang-format clang-tidy cppcheck; do
@@ -42,6 +44,7 @@ cmake --build "${build_dir}" -- -j"$(nproc)"
 clang-tidy --quiet -p "${build_dir}" "${sources[@]}" 2>&1 | sed -E '/^[0-9]+ warnings generated\.$/d'
 
 cppcheck \
+  --library=googletest \
   --enable=warning,performance,portability,style \
   --error-exitcode=1 \
   --std=c++17 \

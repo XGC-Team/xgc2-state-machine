@@ -93,6 +93,17 @@ if(XGC2_STATE_MACHINE_BUILD_TESTING)
     )
     add_test(NAME state_machine_runtime_test COMMAND state_machine_runtime_test)
 
+    add_executable(adt_machine_test test/adt_machine_test.cpp)
+    target_link_libraries(adt_machine_test PRIVATE xgc2_state_machine::state_machine
+      ${_xgc2_state_machine_gtest} ${_xgc2_state_machine_gtest_main})
+    add_test(NAME adt_machine_test COMMAND adt_machine_test)
+    add_test(NAME adt_compile_contract COMMAND ${CMAKE_COMMAND}
+      -DCOMPILER=${CMAKE_CXX_COMPILER}
+      -DINCLUDE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/include
+      -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/test/adt_compile_contract.cpp
+      -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/test/adt_compile_contract.cmake)
+
     find_package(Threads REQUIRED)
     add_executable(async_task_executor_test test/async_task_executor_test.cpp)
     target_link_libraries(async_task_executor_test
