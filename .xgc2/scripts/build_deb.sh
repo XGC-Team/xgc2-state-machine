@@ -81,9 +81,16 @@ Architecture: ${arch}
 Maintainer: XGC2 <apt@example.com>
 Conflicts: ros-noetic-xgc2-state-machine
 Replaces: ros-noetic-xgc2-state-machine
-Description: XGC2 C++17 value-state kernel
- Header-only typed state ownership and CMake usage requirements for XGC2
- controllers and planners. No runtime shared library or worker is installed.
+Breaks: libxgc2-chassis-hold1 (<< 0.2.0-2~),
+ ros-noetic-xgc2-estimator-hover-thrust (<< 1.2.0-2~),
+ libxgc2-hover-thrust-core0 (<< 1.2.0-2~),
+ ros-noetic-xgc2-estimator-rigid-state (<< 1.2.0-3~),
+ ros-melodic-xgc2-estimator-rigid-state (<< 1.2.0-3~),
+ ros-noetic-xgc2-multirotor-controller (<< 1.2.0-6~),
+ ros-noetic-xgc2-ugv-controller (<< 3.0.0-2~)
+Description: XGC2 C++17 state-machine foundation
+ Header-only typed state ownership and optional typed execution primitives
+ with CMake usage requirements. No shared runtime library or daemon.
 EOF
 
 cp -a "${repo_root}/README.md" "${pkg_root}/usr/share/doc/${package_name}/"
