@@ -9,6 +9,7 @@ namespace state_machine::adt {
 struct Stay {};
 
 template <class State> struct Enter {
+    // The destination value is consumed by apply().
     State value;
 };
 template <class State> Enter(State) -> Enter<State>;
@@ -22,8 +23,9 @@ template <class... States> using Transition = std::variant<Stay, Enter<States>..
 template <class Spec> class AdtMachine {
     template <std::size_t... I> static constexpr bool safe_states(std::index_sequence<I...>) {
         return ((std::is_nothrow_move_constructible_v<std::variant_alternative_t<I, typename Spec::State>> &&
-                 std::is_nothrow_destructible_v<std::variant_alternative_t<I, typename Spec::State>>) &&
-                ...);
+                 std::is_nothrow_destructible_v<std::variant_alternative_t<I, typename Spec::State>>)
+                // Every alternative needs both lifetime properties.
+                &&...);
     }
 
   public:
