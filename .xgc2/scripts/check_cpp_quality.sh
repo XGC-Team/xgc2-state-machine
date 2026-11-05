@@ -13,11 +13,13 @@ sources=(
   include/state_machine/async_worker.hpp
   include/state_machine/signal_slot.hpp
   include/state_machine/next_wake.hpp
-  include/state_machine/sync_runtime_tick_adapter.hpp
+  include/state_machine/owner_loop.hpp
+  include/state_machine/owner_schedule.hpp
   test/adt_machine_test.cpp
   test/foundation_test.cpp
   test/async_worker_test.cpp
   test/edge_schedule_test.cpp
+  test/owner_loop_test.cpp
   test/adt_compile_contract.cpp
 )
 

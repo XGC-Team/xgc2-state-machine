@@ -33,6 +33,10 @@ required_files=(
   CMakeLists.txt
   cmake/xgc2_state_machineConfig.cmake.in
   include/state_machine/adt_machine.hpp
+  include/state_machine/owner_loop.hpp
+  include/state_machine/owner_schedule.hpp
+  test/public_headers_compile_contract.cmake
+  test/owner_loop_test.cpp
   test/adt_machine_test.cpp
   test/adt_compile_contract.cpp
   test/adt_compile_contract.cmake
@@ -51,7 +55,7 @@ for file in "${required_files[@]}"; do
   fi
 done
 
-for removed_file in package.xml .github/workflows/build-debs.yml include/state_machine/state_machine.hpp include/state_machine/runtime src; do
+for removed_file in package.xml .github/workflows/build-debs.yml include/state_machine/state_machine.hpp include/state_machine/runtime include/state_machine/ros1_adaptive_loop.hpp include/state_machine/ros1_queued_owner.hpp include/state_machine/sync_runtime_tick_adapter.hpp src; do
   if [[ -e "${removed_file}" ]]; then
     echo "Retired package input remains: ${removed_file}" >&2
     exit 1
