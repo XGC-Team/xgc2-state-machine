@@ -32,19 +32,10 @@ required_files=(
   README.md
   CMakeLists.txt
   cmake/xgc2_state_machineConfig.cmake.in
-  include/state_machine/state_machine.hpp
-  include/state_machine/runtime/event_dispatcher.hpp
-  include/state_machine/runtime/event_post.hpp
-  include/state_machine/runtime/event_time.hpp
-  src/state_machine.cpp
-  src/state_machine_impl.hpp
-  src/builder.cpp
-  src/events.cpp
-  src/graph.cpp
-  src/tasks.cpp
-  src/transitions.cpp
-  src/update.cpp
-  test/state_machine_runtime_test.cpp
+  include/state_machine/adt_machine.hpp
+  test/adt_machine_test.cpp
+  test/adt_compile_contract.cpp
+  test/adt_compile_contract.cmake
   .github/workflows/ci.yml
   .xgc2/product.yml
   .xgc2/scripts/build_deb.sh
@@ -60,9 +51,9 @@ for file in "${required_files[@]}"; do
   fi
 done
 
-for removed_file in package.xml .github/workflows/build-debs.yml; do
+for removed_file in package.xml .github/workflows/build-debs.yml include/state_machine/state_machine.hpp include/state_machine/runtime src; do
   if [[ -e "${removed_file}" ]]; then
-    echo "master system package branch must not keep ROS/catkin file: ${removed_file}" >&2
+    echo "Retired package input remains: ${removed_file}" >&2
     exit 1
   fi
 done

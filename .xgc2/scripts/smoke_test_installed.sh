@@ -1,64 +1,37 @@
 #!/usr/bin/env bash
-
 set -euo pipefail
 
 dpkg -s libxgc2-state-machine-dev >/dev/null
-
 multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
-test -f /usr/include/state_machine/state_machine.hpp
 test -f /usr/include/state_machine/adt_machine.hpp
-test -f /usr/include/state_machine/runtime/event_dispatcher.hpp
-test -f /usr/include/state_machine/runtime/event_post.hpp
-test -f /usr/include/state_machine/runtime/event_time.hpp
-test -f "/usr/lib/${multiarch}/libxgc2_state_machine.so"
+test ! -e /usr/include/state_machine/state_machine.hpp
+test ! -d /usr/include/state_machine/runtime
 test -f "/usr/lib/${multiarch}/cmake/xgc2_state_machine/xgc2_state_machineConfig.cmake"
-
-ldd "/usr/lib/${multiarch}/libxgc2_state_machine.so" | tee /tmp/xgc2-state-machine-ldd.txt
-if grep -q "not found" /tmp/xgc2-state-machine-ldd.txt; then
+if compgen -G "/usr/lib/${multiarch}/libxgc2_state_machine.so*" >/dev/null; then
+  echo "Retired state-machine library remains installed" >&2
   exit 1
 fi
 
 probe_dir="${XGC2_STATE_MACHINE_SMOKE_DIR:-$(mktemp -d -t xgc2-state-machine-smoke-XXXXXX)}"
 mkdir -p "${probe_dir}"
-
 cat > "${probe_dir}/CMakeLists.txt" <<'CMAKE'
 cmake_minimum_required(VERSION 3.10)
-project(xgc2_state_machine_link_probe LANGUAGES CXX)
-
-find_package(xgc2_state_machine REQUIRED CONFIG)
-xgc2_state_machine_require()
-
-add_executable(link_probe link_probe.cpp)
-target_compile_features(link_probe PRIVATE cxx_std_17)
-target_link_libraries(link_probe PRIVATE xgc2_state_machine::state_machine)
+project(xgc2_state_machine_installed_probe LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 11)
+find_package(xgc2_state_machine 0.2.0 REQUIRED CONFIG)
+get_target_property(kind xgc2_state_machine::state_machine TYPE)
+if(NOT kind STREQUAL "INTERFACE_LIBRARY")
+  message(FATAL_ERROR "The kernel must be header-only")
+endif()
+add_executable(probe probe.cpp)
+target_link_libraries(probe PRIVATE xgc2_state_machine::state_machine)
 CMAKE
-
-cat > "${probe_dir}/link_probe.cpp" <<'CPP'
-#include <state_machine/state_machine.hpp>
+cat > "${probe_dir}/probe.cpp" <<'CPP'
 #include <state_machine/adt_machine.hpp>
-#include <state_machine/runtime/event_dispatcher.hpp>
-#include <state_machine/runtime/event_post.hpp>
-#include <state_machine/runtime/event_time.hpp>
-
-#include <memory>
-
-class ReadyState final : public state_machine::State {
-public:
-  std::string name() const override { return "Ready"; }
-
-  state_machine::ActionResult onEnter(state_machine::StateContext&) override
-  {
-    entered = true;
-    return {};
-  }
-
-  bool entered{false};
-};
-
 struct Cold {};
 struct Hot { int value; };
 struct Heat {};
-struct ValueSpec {
+struct Spec {
   using State = std::variant<Cold, Hot>;
   using Time = int;
   static state_machine::adt::Transition<Cold, Hot> handle(Cold&, const Heat&) {
@@ -68,57 +41,15 @@ struct ValueSpec {
     return state_machine::adt::Stay{};
   }
 };
-
-int main()
-{
-  state_machine::adt::AdtMachine<ValueSpec> value_machine(Cold{}, 0);
-  value_machine.apply(value_machine.dispatch(Heat{}), 1);
-  if (std::get<Hot>(value_machine.state()).value != 42 || value_machine.entered_at() != 1) {
-    return 1;
-  }
-  auto ready = std::make_unique<ReadyState>();
-  auto* ready_ptr = ready.get();
-
-  auto builder = state_machine::StateMachine::builder("probe");
-  auto result = builder.region(state_machine::kDefaultRegion)
-                    .initial(1)
-                    .state(1)
-                    .impl(std::move(ready))
-                    .endRegion()
-                    .build();
-  if (!result.status.ok()) {
-    return 1;
-  }
-  auto machine = std::move(result.value);
-  if (!machine->start().ok()) {
-    return 1;
-  }
-  const auto update_result = machine->update();
-  if (!update_result.ok() || !machine->currentTrace().empty()) {
-    return 1;
-  }
-  if (!ready_ptr->entered) {
-    return 1;
-  }
-  const state_machine::Event unstamped(7);
-  if (state_machine::runtime::eventTimestampOr(unstamped, 2.0) != 2.0) {
-    return 1;
-  }
-  class ProbeConsumer final : public state_machine::runtime::EventConsumer {
-  public:
-    std::string name() const override { return "probe"; }
-    bool handle(const state_machine::Event&) override { return true; }
-  };
-  state_machine::runtime::EventDispatcher dispatcher;
-  dispatcher.addConsumer(std::make_unique<ProbeConsumer>());
-  const auto dispatch_result = dispatcher.dispatch({state_machine::Event{1}});
-  return machine->currentState() == 1 && dispatch_result.events_handled == 1 ? 0 : 1;
+int main() {
+  static_assert(__cplusplus >= 201703L, "C++17 must propagate from the target");
+  state_machine::adt::AdtMachine<Spec> machine(Cold{}, 0);
+  machine.apply(machine.dispatch(Heat{}), 1);
+  return std::get<Hot>(machine.state()).value == 42 && machine.entered_at() == 1 ? 0 : 1;
 }
 CPP
-
 mkdir -p "${probe_dir}/build"
 (cd "${probe_dir}/build" && cmake "${probe_dir}")
 cmake --build "${probe_dir}/build" -- -j2
-"${probe_dir}/build/link_probe"
-
-echo "libxgc2-state-machine-dev installed smoke test passed."
+"${probe_dir}/build/probe"
+echo "Header-only installed contract passed."

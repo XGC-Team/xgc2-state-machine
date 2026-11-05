@@ -8,20 +8,9 @@ build_dir="${XGC2_STATE_MACHINE_QUALITY_BUILD_DIR:-${repo_root}/.ci/cpp-quality}
 cd "${repo_root}"
 
 sources=(
-  include/state_machine/state_machine.hpp
   include/state_machine/adt_machine.hpp
-  include/state_machine/runtime/event_dispatcher.hpp
-  src/state_machine_impl.hpp
-  src/builder.cpp
-  src/events.cpp
-  src/graph.cpp
-  src/state_machine.cpp
-  src/tasks.cpp
-  src/transitions.cpp
-  src/update.cpp
-  test/state_machine_allocation_test.cpp
-  test/state_machine_runtime_test.cpp
   test/adt_machine_test.cpp
+  test/adt_compile_contract.cpp
 )
 
 for tool in cmake ctest clang-format clang-tidy cppcheck; do
@@ -49,9 +38,7 @@ cppcheck \
   --error-exitcode=1 \
   --std=c++17 \
   --inline-suppr \
-  --suppress=assertWithSideEffect:test/state_machine_runtime_test.cpp \
   -I include \
-  -i test/benchmark \
-  src test
+  include test
 
 echo "C++ quality checks passed."

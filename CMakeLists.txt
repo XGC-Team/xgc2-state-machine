@@ -1,71 +1,34 @@
 cmake_minimum_required(VERSION 3.10)
-project(xgc2_state_machine VERSION 0.1.3 LANGUAGES CXX)
+project(xgc2_state_machine VERSION 0.2.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
-
 option(XGC2_STATE_MACHINE_BUILD_TESTING "Build xgc2_state_machine tests" ON)
-option(XGC2_STATE_MACHINE_BUILD_BENCHMARKS "Build xgc2_state_machine tick benchmarks" OFF)
 
-add_library(xgc2_state_machine SHARED
-  src/builder.cpp
-  src/events.cpp
-  src/graph.cpp
-  src/state_machine.cpp
-  src/tasks.cpp
-  src/transitions.cpp
-  src/update.cpp
-)
+add_library(xgc2_state_machine INTERFACE)
 add_library(xgc2_state_machine::state_machine ALIAS xgc2_state_machine)
+set_target_properties(xgc2_state_machine PROPERTIES EXPORT_NAME state_machine)
+target_compile_features(xgc2_state_machine INTERFACE cxx_std_17)
+target_include_directories(xgc2_state_machine INTERFACE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
-set_target_properties(xgc2_state_machine PROPERTIES
-  OUTPUT_NAME xgc2_state_machine
-  EXPORT_NAME state_machine
-  VERSION ${PROJECT_VERSION}
-  SOVERSION 0
-)
-
-target_compile_features(xgc2_state_machine PUBLIC cxx_std_17)
-target_include_directories(xgc2_state_machine
-  PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-)
-
-install(TARGETS xgc2_state_machine
-  EXPORT xgc2_state_machineTargets
-  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
-
-install(DIRECTORY include/
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-)
-
-configure_package_config_file(
-  cmake/xgc2_state_machineConfig.cmake.in
+install(TARGETS xgc2_state_machine EXPORT xgc2_state_machineTargets)
+install(FILES include/state_machine/adt_machine.hpp
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/state_machine)
+configure_package_config_file(cmake/xgc2_state_machineConfig.cmake.in
   ${CMAKE_CURRENT_BINARY_DIR}/xgc2_state_machineConfig.cmake
   INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/xgc2_state_machine
-  PATH_VARS CMAKE_INSTALL_INCLUDEDIR
-)
-
+  PATH_VARS CMAKE_INSTALL_INCLUDEDIR)
 write_basic_package_version_file(
   ${CMAKE_CURRENT_BINARY_DIR}/xgc2_state_machineConfigVersion.cmake
-  VERSION ${PROJECT_VERSION}
-  COMPATIBILITY SameMajorVersion
-)
-
+  VERSION ${PROJECT_VERSION} COMPATIBILITY SameMinorVersion)
 install(FILES
   ${CMAKE_CURRENT_BINARY_DIR}/xgc2_state_machineConfig.cmake
   ${CMAKE_CURRENT_BINARY_DIR}/xgc2_state_machineConfigVersion.cmake
-  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/xgc2_state_machine
-)
-
-install(EXPORT xgc2_state_machineTargets
-  NAMESPACE xgc2_state_machine::
-  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/xgc2_state_machine
-)
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/xgc2_state_machine)
+install(EXPORT xgc2_state_machineTargets NAMESPACE xgc2_state_machine::
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/xgc2_state_machine)
 
 if(XGC2_STATE_MACHINE_BUILD_TESTING)
   include(CTest)
@@ -81,18 +44,6 @@ if(XGC2_STATE_MACHINE_BUILD_TESTING)
     else()
       set(_xgc2_state_machine_gtest_main GTest::Main)
     endif()
-    add_executable(state_machine_runtime_test
-      test/state_machine_runtime_test.cpp
-    )
-    target_link_libraries(state_machine_runtime_test
-      PRIVATE
-        xgc2_state_machine::state_machine
-        ${_xgc2_state_machine_gtest}
-        ${_xgc2_state_machine_gtest_main}
-        pthread
-    )
-    add_test(NAME state_machine_runtime_test COMMAND state_machine_runtime_test)
-
     add_executable(adt_machine_test test/adt_machine_test.cpp)
     target_link_libraries(adt_machine_test PRIVATE xgc2_state_machine::state_machine
       ${_xgc2_state_machine_gtest} ${_xgc2_state_machine_gtest_main})
@@ -103,65 +54,5 @@ if(XGC2_STATE_MACHINE_BUILD_TESTING)
       -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/test/adt_compile_contract.cpp
       -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/test/adt_compile_contract.cmake)
-
-    find_package(Threads REQUIRED)
-    add_executable(async_task_executor_test test/async_task_executor_test.cpp)
-    target_link_libraries(async_task_executor_test
-      PRIVATE xgc2_state_machine::state_machine Threads::Threads
-    )
-    foreach(_case self_stop external_worker_stop discard_cleanup destructor_cleanup
-                  restart fifo_exceptions concurrent_lifecycle)
-      add_test(NAME async_task_executor_${_case}
-        COMMAND async_task_executor_test ${_case})
-      set_tests_properties(async_task_executor_${_case} PROPERTIES TIMEOUT 15)
-    endforeach()
-
-    # Replays seeded scenarios and compares every observable output with a
-    # golden file recorded from the revision before the per-tick optimizations.
-    add_executable(state_machine_equivalence_test test/state_machine_equivalence_test.cpp)
-    target_include_directories(state_machine_equivalence_test PRIVATE test)
-    target_link_libraries(state_machine_equivalence_test
-      PRIVATE xgc2_state_machine::state_machine Threads::Threads
-    )
-    add_test(NAME state_machine_equivalence_test
-      COMMAND state_machine_equivalence_test
-        ${CMAKE_CURRENT_SOURCE_DIR}/test/golden/state_machine_equivalence.golden)
-    set_tests_properties(state_machine_equivalence_test PROPERTIES TIMEOUT 120)
-    # The same scenarios with callbacks posting internal events from every
-    # callback kind; recorded after the per-tick internal event storage was made
-    # address-stable (before that it was undefined behaviour).
-    add_test(NAME state_machine_equivalence_internal_anywhere_test
-      COMMAND state_machine_equivalence_test --internal-anywhere
-        ${CMAKE_CURRENT_SOURCE_DIR}/test/golden/state_machine_equivalence_internal_anywhere.golden)
-    set_tests_properties(state_machine_equivalence_internal_anywhere_test PROPERTIES TIMEOUT 120)
-
-    # Producer threads post while the owner updates: nothing lost, nothing reordered.
-    add_executable(state_machine_concurrency_test test/state_machine_concurrency_test.cpp)
-    target_link_libraries(state_machine_concurrency_test
-      PRIVATE xgc2_state_machine::state_machine Threads::Threads
-    )
-    add_test(NAME state_machine_concurrency_test COMMAND state_machine_concurrency_test)
-    set_tests_properties(state_machine_concurrency_test PROPERTIES TIMEOUT 60)
-    # A worker thread posts task results while the owner updates and another thread posts.
-    add_executable(state_machine_task_result_test test/state_machine_task_result_test.cpp)
-    target_link_libraries(state_machine_task_result_test
-      PRIVATE xgc2_state_machine::state_machine Threads::Threads
-    )
-    add_test(NAME state_machine_task_result_test COMMAND state_machine_task_result_test)
-    set_tests_properties(state_machine_task_result_test PROPERTIES TIMEOUT 60)
-
-    # A steady-state tick must not allocate; counts operator new calls.
-    add_executable(state_machine_allocation_test test/state_machine_allocation_test.cpp)
-    target_include_directories(state_machine_allocation_test PRIVATE test)
-    target_link_libraries(state_machine_allocation_test PRIVATE xgc2_state_machine::state_machine)
-    add_test(NAME state_machine_allocation_test COMMAND state_machine_allocation_test)
-    set_tests_properties(state_machine_allocation_test PROPERTIES TIMEOUT 60)
   endif()
-endif()
-
-if(XGC2_STATE_MACHINE_BUILD_BENCHMARKS)
-  # Not installed and not part of the test suite: run by hand.
-  add_executable(state_machine_tick_bench test/benchmark/state_machine_tick_bench.cpp)
-  target_include_directories(state_machine_tick_bench PRIVATE test/support)
-  target_link_libraries(state_machine_tick_bench PRIVATE xgc2_state_machine::state_machine)
 endif()
