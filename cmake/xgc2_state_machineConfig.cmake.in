@@ -3,3 +3,12 @@
 include("${CMAKE_CURRENT_LIST_DIR}/xgc2_state_machineTargets.cmake")
 set(XGC2_STATE_MACHINE_INCLUDE_DIRS "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
 set(XGC2_STATE_MACHINE_LIBRARIES xgc2_state_machine::state_machine)
+
+set(xgc2_state_machine_core_FOUND TRUE)
+if("workers" IN_LIST xgc2_state_machine_FIND_COMPONENTS)
+  include(CMakeFindDependencyMacro)
+  find_dependency(Threads)
+  include("${CMAKE_CURRENT_LIST_DIR}/xgc2_state_machineWorkersTargets.cmake")
+  set(xgc2_state_machine_workers_FOUND TRUE)
+endif()
+check_required_components(xgc2_state_machine)

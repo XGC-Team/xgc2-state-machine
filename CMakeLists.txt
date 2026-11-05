@@ -15,7 +15,19 @@ target_include_directories(xgc2_state_machine INTERFACE
 
 install(TARGETS xgc2_state_machine EXPORT xgc2_state_machineTargets)
 install(FILES include/state_machine/adt_machine.hpp
+  include/state_machine/signal_slot.hpp include/state_machine/next_wake.hpp
+  include/state_machine/ordered_worker.hpp
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/state_machine)
+
+find_package(Threads REQUIRED)
+add_library(xgc2_state_machine_workers INTERFACE)
+add_library(xgc2_state_machine::workers ALIAS xgc2_state_machine_workers)
+set_target_properties(xgc2_state_machine_workers PROPERTIES EXPORT_NAME workers)
+target_link_libraries(xgc2_state_machine_workers INTERFACE
+  xgc2_state_machine::state_machine Threads::Threads)
+install(TARGETS xgc2_state_machine_workers EXPORT xgc2_state_machineWorkersTargets)
+install(EXPORT xgc2_state_machineWorkersTargets NAMESPACE xgc2_state_machine::
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/xgc2_state_machine)
 configure_package_config_file(cmake/xgc2_state_machineConfig.cmake.in
   ${CMAKE_CURRENT_BINARY_DIR}/xgc2_state_machineConfig.cmake
   INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/xgc2_state_machine
@@ -48,6 +60,11 @@ if(XGC2_STATE_MACHINE_BUILD_TESTING)
     target_link_libraries(adt_machine_test PRIVATE xgc2_state_machine::state_machine
       ${_xgc2_state_machine_gtest} ${_xgc2_state_machine_gtest_main})
     add_test(NAME adt_machine_test COMMAND adt_machine_test)
+    add_executable(foundation_test test/foundation_test.cpp)
+    target_link_libraries(foundation_test PRIVATE xgc2_state_machine::workers
+      ${_xgc2_state_machine_gtest} ${_xgc2_state_machine_gtest_main})
+    add_test(NAME foundation_test COMMAND foundation_test)
+    set_tests_properties(foundation_test PROPERTIES TIMEOUT 30)
     add_test(NAME adt_compile_contract COMMAND ${CMAKE_COMMAND}
       -DCOMPILER=${CMAKE_CXX_COMPILER}
       -DINCLUDE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/include

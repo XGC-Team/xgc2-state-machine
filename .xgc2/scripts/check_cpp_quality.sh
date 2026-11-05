@@ -9,7 +9,11 @@ cd "${repo_root}"
 
 sources=(
   include/state_machine/adt_machine.hpp
+  include/state_machine/ordered_worker.hpp
+  include/state_machine/signal_slot.hpp
+  include/state_machine/next_wake.hpp
   test/adt_machine_test.cpp
+  test/foundation_test.cpp
   test/adt_compile_contract.cpp
 )
 
