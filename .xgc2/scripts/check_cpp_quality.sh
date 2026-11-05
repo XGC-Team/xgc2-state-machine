@@ -10,10 +10,14 @@ cd "${repo_root}"
 sources=(
   include/state_machine/adt_machine.hpp
   include/state_machine/ordered_worker.hpp
+  include/state_machine/async_worker.hpp
   include/state_machine/signal_slot.hpp
   include/state_machine/next_wake.hpp
+  include/state_machine/sync_runtime_tick_adapter.hpp
   test/adt_machine_test.cpp
   test/foundation_test.cpp
+  test/async_worker_test.cpp
+  test/edge_schedule_test.cpp
   test/adt_compile_contract.cpp
 )
 
