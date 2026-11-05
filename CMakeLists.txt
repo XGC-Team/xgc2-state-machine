@@ -22,7 +22,7 @@ configure_package_config_file(cmake/xgc2_state_machineConfig.cmake.in
   PATH_VARS CMAKE_INSTALL_INCLUDEDIR)
 write_basic_package_version_file(
   ${CMAKE_CURRENT_BINARY_DIR}/xgc2_state_machineConfigVersion.cmake
-  VERSION ${PROJECT_VERSION} COMPATIBILITY SameMinorVersion)
+  VERSION ${PROJECT_VERSION} COMPATIBILITY ExactVersion)
 install(FILES
   ${CMAKE_CURRENT_BINARY_DIR}/xgc2_state_machineConfig.cmake
   ${CMAKE_CURRENT_BINARY_DIR}/xgc2_state_machineConfigVersion.cmake
